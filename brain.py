@@ -1,41 +1,37 @@
-import random
-
-class RandomBrain:
-    def decide(self, agent, world):
-        dx = random.choice([-1, 0, 1])
-        dy = random.choice([-1, 0, 1])
-        return dx, dy
-
-
 class FoodBrain:
+    """
+    Brain semplice: va verso il cibo più vicino.
+    Se non vede cibo, si muove a caso.
+    """
+
     def decide(self, agent, world):
+        if not world.food:
+            return 0, 0
 
-        closest_food = None
-        min_dist = 999
+        ax, ay = agent.x, agent.y
 
-        for fx, fy in world.food:
-            dist = abs(agent.x - fx) + abs(agent.y - fy)
+        # trova cibo più vicino (manhattan)
+        best = None
+        best_dist = 10**9
+        for (fx, fy) in world.food:
+            d = abs(fx - ax) + abs(fy - ay)
+            if d < best_dist:
+                best_dist = d
+                best = (fx, fy)
 
-            if dist < min_dist:
-                min_dist = dist
-                closest_food = (fx, fy)
+        if best is None:
+            return 0, 0
 
-        if closest_food:
-            fx, fy = closest_food
+        fx, fy = best
+        dx = 0
+        dy = 0
+        if fx > ax:
+            dx = 1
+        elif fx < ax:
+            dx = -1
+        elif fy > ay:
+            dy = 1
+        elif fy < ay:
+            dy = -1
 
-            dx = 0
-            dy = 0
-
-            if fx > agent.x:
-                dx = 1
-            elif fx < agent.x:
-                dx = -1
-
-            if fy > agent.y:
-                dy = 1
-            elif fy < agent.y:
-                dy = -1
-
-            return dx, dy
-
-        return random.choice([-1,0,1]), random.choice([-1,0,1])
+        return dx, dy

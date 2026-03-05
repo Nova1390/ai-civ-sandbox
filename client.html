@@ -5,62 +5,156 @@
 <title>AI MMORPG</title>
 
 <style>
-body {
-    font-family: Arial;
-}
-
-canvas {
-    border:1px solid black;
-}
+  body { font-family: Arial; margin: 16px; }
+  .row { display: flex; gap: 16px; align-items: flex-start; }
+  canvas { border: 1px solid #000; }
+  .panel { width: 320px; border: 1px solid #ddd; padding: 12px; }
+  button { padding: 8px 12px; margin: 4px 0; width: 100%; }
+  .small { font-size: 12px; color: #666; }
+  .kv { display:flex; justify-content:space-between; margin: 6px 0; }
+  input, select { width: 100%; padding: 8px; margin: 6px 0; box-sizing: border-box; }
 </style>
-
 </head>
-
 <body>
 
 <h2>AI MMORPG WORLD</h2>
 
-<canvas id="world" width="600" height="600"></canvas>
+<div class="row">
+  <div>
+    <button onclick="spawnPlayer()">Spawn Player</button>
+    <canvas id="world" width="600" height="600"></canvas>
+    <p id="stats" class="small"></p>
+  </div>
 
-<p id="stats"></p>
+  <div class="panel">
+    <h3 style="margin:8px 0;">Player</h3>
+    <div class="kv"><span>Player ID</span><span id="pid">-</span></div>
+    <div class="kv"><span>Hunger</span><span id="hunger">-</span></div>
+
+    <hr/>
+    <h3 style="margin:8px 0;">Chat Command</h3>
+    <input id="cmd" placeholder="Es: build house / gather food / attack ..." />
+    <select id="horizon">
+      <option value="short">short</option>
+      <option value="medium">medium</option>
+      <option value="long">long</option>
+    </select>
+    <button onclick="sendCommand()">Send Command</button>
+    <div class="small">L'agente traduce il goal in un piano (oggi rule-based, poi OpenClaw).</div>
+
+    <hr/>
+    <h3 style="margin:8px 0;">Inventory</h3>
+    <div class="kv"><span>food</span><span id="inv_food">0</span></div>
+    <div class="kv"><span>wood</span><span id="inv_wood">0</span></div>
+    <div class="kv"><span>stone</span><span id="inv_stone">0</span></div>
+    <div class="kv"><span>sword</span><span id="inv_sword">0</span></div>
+
+    <hr/>
+    <h3 style="margin:8px 0;">Shop (fake)</h3>
+    <button onclick="buy('food', 5)">Buy +5 food</button>
+    <button onclick="buy('wood', 5)">Buy +5 wood</button>
+    <button onclick="buy('stone', 5)">Buy +5 stone</button>
+    <button onclick="buy('sword', 1)">Buy +1 sword</button>
+
+    <hr/>
+    <h3 style="margin:8px 0;">Goal/Plan</h3>
+    <div class="small" id="goalview">goal: -</div>
+    <div class="small" id="planview">plan: -</div>
+  </div>
+</div>
 
 <script>
-
 const canvas = document.getElementById("world");
 const ctx = canvas.getContext("2d");
+let playerId = null;
 
-async function update() {
-
-    const response = await fetch("/state");
-    const data = await response.json();
-
-    const width = data.width;
-    const height = data.height;
-
-    const cellSize = canvas.width / width;
-
-    ctx.clearRect(0,0,canvas.width,canvas.height);
-
-    ctx.fillStyle = "green";
-
-    data.food.forEach(f=>{
-        ctx.fillRect(f.x*cellSize, f.y*cellSize, cellSize, cellSize);
-    });
-
-    ctx.fillStyle = "blue";
-
-    data.agents.forEach(a=>{
-        ctx.fillRect(a.x*cellSize, a.y*cellSize, cellSize, cellSize);
-    });
-
-    document.getElementById("stats").innerText =
-        "Tick: " + data.tick +
-        " | Agents: " + data.agents_alive +
-        " | Food: " + data.food_count;
+function cellSizeFor(width) {
+  return canvas.width / width;
 }
 
-setInterval(update,200);
+async function updateWorld() {
+  const res = await fetch("/state", { cache: "no-store" });
+  const data = await res.json();
 
+  const cell = cellSizeFor(data.width);
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  // food
+  ctx.fillStyle = "green";
+  data.food.forEach(f => {
+    ctx.fillRect(f.x * cell, f.y * cell, cell, cell);
+  });
+
+  // agents
+  data.agents.forEach(a => {
+    if (a.is_player && a.player_id === playerId) ctx.fillStyle = "red";
+    else if (a.is_player) ctx.fillStyle = "#ff8a8a";
+    else ctx.fillStyle = "blue";
+
+    ctx.fillRect(a.x * cell, a.y * cell, cell, cell);
+  });
+
+  document.getElementById("stats").innerText =
+    `Tick: ${data.tick} | Agents: ${data.agents_alive} | Food: ${data.food_count}`;
+
+  // mostra goal del player (se presente nello state)
+  if (playerId) {
+    const me = data.agents.find(a => a.player_id === playerId);
+    document.getElementById("goalview").innerText = "goal: " + (me?.current_goal?.text ?? "-");
+  }
+}
+
+async function spawnPlayer() {
+  const res = await fetch("/spawn_player", { method: "POST" });
+  const data = await res.json();
+
+  playerId = data.player_id;
+  document.getElementById("pid").innerText = playerId.slice(0, 8) + "...";
+
+  await refreshPlayerPanel();
+}
+
+async function refreshPlayerPanel() {
+  if (!playerId) return;
+
+  const res = await fetch(`/player/${playerId}`, { cache: "no-store" });
+  if (res.status !== 200) return;
+
+  const p = await res.json();
+  document.getElementById("hunger").innerText = p.hunger;
+
+  document.getElementById("inv_food").innerText  = p.inventory.food ?? 0;
+  document.getElementById("inv_wood").innerText  = p.inventory.wood ?? 0;
+  document.getElementById("inv_stone").innerText = p.inventory.stone ?? 0;
+  document.getElementById("inv_sword").innerText = p.inventory.sword ?? 0;
+
+  document.getElementById("planview").innerText = "plan: " + JSON.stringify(p.current_plan ?? []);
+}
+
+async function buy(item, qty) {
+  if (!playerId) { alert("Spawn Player prima!"); return; }
+  await fetch(`/player/${playerId}/buy/${item}?qty=${qty}`, { method: "POST" });
+  await refreshPlayerPanel();
+}
+
+async function sendCommand() {
+  if (!playerId) { alert("Spawn Player prima!"); return; }
+  const text = document.getElementById("cmd").value.trim();
+  const horizon = document.getElementById("horizon").value;
+  if (!text) return;
+
+  await fetch(`/player/${playerId}/command`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text, horizon })
+  });
+
+  document.getElementById("cmd").value = "";
+  await refreshPlayerPanel();
+}
+
+setInterval(updateWorld, 200);
+setInterval(refreshPlayerPanel, 600);
 </script>
 
 </body>
