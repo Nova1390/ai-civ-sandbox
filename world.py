@@ -1,15 +1,14 @@
 import random
 from config import WIDTH, HEIGHT, NUM_AGENTS, NUM_FOOD
 from agent import Agent
-from brain import RandomBrain
-
+from brain import FoodBrain
 class World:
     def __init__(self):
         self.agents = [
     Agent(
         random.randint(0, WIDTH-1),
         random.randint(0, HEIGHT-1),
-        RandomBrain()
+       FoodBrain()
     )
     for _ in range(NUM_AGENTS)
 ]
