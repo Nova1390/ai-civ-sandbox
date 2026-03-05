@@ -1,5 +1,5 @@
 import random
-from config import WIDTH, HEIGHT, NUM_AGENTS, NUM_FOOD
+from config import WIDTH, HEIGHT, NUM_AGENTS, NUM_FOOD, FOOD_RESPAWN_PER_TICK, MAX_FOOD
 from agent import Agent
 from brain import FoodBrain
 class World:
@@ -19,19 +19,26 @@ class World:
         }
 
     def update(self):
-        alive_agents = []
+    alive_agents = []
 
-        for agent in self.agents:
-            agent.update(self)
+    for agent in self.agents:
+        agent.update(self)
 
-            if (agent.x, agent.y) in self.food:
-                agent.eat()
-                self.food.remove((agent.x, agent.y))
+        if (agent.x, agent.y) in self.food:
+            agent.eat()
+            self.food.remove((agent.x, agent.y))
 
-            if agent.alive:
-                alive_agents.append(agent)
+        if agent.alive:
+            alive_agents.append(agent)
 
-        self.agents = alive_agents
+    self.agents = alive_agents
+
+    # Respawn cibo
+    if len(self.food) < MAX_FOOD:
+        for _ in range(FOOD_RESPAWN_PER_TICK):
+            if len(self.food) >= MAX_FOOD:
+                break
+            self.food.add((random.randint(0, WIDTH-1), random.randint(0, HEIGHT-1)))
 
     def generate_grid(self):
         grid = [["." for _ in range(WIDTH)] for _ in range(HEIGHT)]
