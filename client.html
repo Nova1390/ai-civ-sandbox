@@ -1,20 +1,21 @@
 <!DOCTYPE html>
 <html>
 <head>
-<meta charset="UTF-8">
-<title>AI MMORPG</title>
+  <meta charset="UTF-8">
+  <title>AI MMORPG</title>
 
-<style>
-  body { font-family: Arial; margin: 16px; }
-  .row { display: flex; gap: 16px; align-items: flex-start; }
-  canvas { border: 1px solid #000; }
-  .panel { width: 320px; border: 1px solid #ddd; padding: 12px; }
-  button { padding: 8px 12px; margin: 4px 0; width: 100%; }
-  .small { font-size: 12px; color: #666; }
-  .kv { display:flex; justify-content:space-between; margin: 6px 0; }
-  input, select { width: 100%; padding: 8px; margin: 6px 0; box-sizing: border-box; }
-</style>
+  <style>
+    body { font-family: Arial; }
+    canvas { border: 1px solid black; }
+    .row { display: flex; gap: 16px; align-items: flex-start; }
+    .panel { width: 260px; border: 1px solid #ddd; padding: 10px; }
+    .kv { display: flex; justify-content: space-between; margin: 6px 0; font-size: 13px; }
+    input { width: 100%; box-sizing: border-box; padding: 8px; margin: 6px 0; }
+    button { padding: 8px; width: 100%; margin: 6px 0; }
+    .small { font-size: 12px; color: #666; }
+  </style>
 </head>
+
 <body>
 
 <h2>AI MMORPG WORLD</h2>
@@ -27,134 +28,235 @@
   </div>
 
   <div class="panel">
-    <h3 style="margin:8px 0;">Player</h3>
-    <div class="kv"><span>Player ID</span><span id="pid">-</span></div>
+    <h3 style="margin: 6px 0;">Minimap</h3>
+    <canvas id="minimap" width="160" height="160"></canvas>
+    <div class="small">Rosso = tu. Arancione = market. Giallo = roads.</div>
+
+    <hr>
+    <h3 style="margin: 6px 0;">Player</h3>
+    <div class="kv"><span>ID</span><span id="pid">-</span></div>
+    <div class="kv"><span>Pos</span><span id="pos">-</span></div>
     <div class="kv"><span>Hunger</span><span id="hunger">-</span></div>
 
-    <hr/>
-    <h3 style="margin:8px 0;">Chat Command</h3>
-    <input id="cmd" placeholder="Es: build house / gather food / attack ..." />
-    <select id="horizon">
-      <option value="short">short</option>
-      <option value="medium">medium</option>
-      <option value="long">long</option>
-    </select>
-    <button onclick="sendCommand()">Send Command</button>
-    <div class="small">L'agente traduce il goal in un piano (oggi rule-based, poi OpenClaw).</div>
-
-    <hr/>
-    <h3 style="margin:8px 0;">Inventory</h3>
+    <hr>
+    <h3 style="margin: 6px 0;">Inventory</h3>
     <div class="kv"><span>food</span><span id="inv_food">0</span></div>
     <div class="kv"><span>wood</span><span id="inv_wood">0</span></div>
     <div class="kv"><span>stone</span><span id="inv_stone">0</span></div>
-    <div class="kv"><span>sword</span><span id="inv_sword">0</span></div>
 
-    <hr/>
-    <h3 style="margin:8px 0;">Shop (fake)</h3>
-    <button onclick="buy('food', 5)">Buy +5 food</button>
-    <button onclick="buy('wood', 5)">Buy +5 wood</button>
-    <button onclick="buy('stone', 5)">Buy +5 stone</button>
-    <button onclick="buy('sword', 1)">Buy +1 sword</button>
-
-    <hr/>
-    <h3 style="margin:8px 0;">Goal/Plan</h3>
-    <div class="small" id="goalview">goal: -</div>
-    <div class="small" id="planview">plan: -</div>
+    <hr>
+    <h3 style="margin: 6px 0;">Command</h3>
+    <input id="commandBox" placeholder="e.g. build house / gather food">
+    <button onclick="sendCommand()">Send</button>
+    <div class="small">Planner rule-based (poi OpenClaw).</div>
   </div>
 </div>
 
 <script>
-const canvas = document.getElementById("world");
-const ctx = canvas.getContext("2d");
-let playerId = null;
+  const canvas = document.getElementById("world");
+  const ctx = canvas.getContext("2d");
 
-function cellSizeFor(width) {
-  return canvas.width / width;
-}
+  const mini = document.getElementById("minimap");
+  const mctx = mini.getContext("2d");
 
-async function updateWorld() {
-  const res = await fetch("/state", { cache: "no-store" });
-  const data = await res.json();
+  let playerId = null;
 
-  const cell = cellSizeFor(data.width);
-  ctx.clearRect(0,0,canvas.width,canvas.height);
-
-  // food
-  ctx.fillStyle = "green";
-  data.food.forEach(f => {
-    ctx.fillRect(f.x * cell, f.y * cell, cell, cell);
-  });
-
-  // agents
-  data.agents.forEach(a => {
-    if (a.is_player && a.player_id === playerId) ctx.fillStyle = "red";
-    else if (a.is_player) ctx.fillStyle = "#ff8a8a";
-    else ctx.fillStyle = "blue";
-
-    ctx.fillRect(a.x * cell, a.y * cell, cell, cell);
-  });
-
-  document.getElementById("stats").innerText =
-    `Tick: ${data.tick} | Agents: ${data.agents_alive} | Food: ${data.food_count}`;
-
-  // mostra goal del player (se presente nello state)
-  if (playerId) {
-    const me = data.agents.find(a => a.player_id === playerId);
-    document.getElementById("goalview").innerText = "goal: " + (me?.current_goal?.text ?? "-");
+  async function spawnPlayer() {
+    const response = await fetch("/spawn_player", { method: "POST" });
+    const data = await response.json();
+    playerId = data.player_id;
+    document.getElementById("pid").innerText = playerId.slice(0, 8) + "...";
   }
-}
 
-async function spawnPlayer() {
-  const res = await fetch("/spawn_player", { method: "POST" });
-  const data = await res.json();
+  async function sendCommand() {
+    if (!playerId) return;
+    const text = document.getElementById("commandBox").value.trim();
+    if (!text) return;
 
-  playerId = data.player_id;
-  document.getElementById("pid").innerText = playerId.slice(0, 8) + "...";
+    await fetch(`/player/${playerId}/command`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: text, horizon: "short" })
+    });
 
-  await refreshPlayerPanel();
-}
+    document.getElementById("commandBox").value = "";
+  }
 
-async function refreshPlayerPanel() {
-  if (!playerId) return;
+  function tileColor(t) {
+    if (t === "G") return "#7CFC90";
+    if (t === "F") return "#2E8B57";
+    if (t === "M") return "#999999";
+    if (t === "W") return "#4DA6FF";
+    return "#ffffff";
+  }
 
-  const res = await fetch(`/player/${playerId}`, { cache: "no-store" });
-  if (res.status !== 200) return;
+  function overlayColor(o) {
+    if (o === "R") return "#F2D14B"; // road (giallo)
+    if (o === "H") return "#8B5A2B"; // house
+    if (o === "K") return "#FF9F1A"; // market
+    return null;
+  }
 
-  const p = await res.json();
-  document.getElementById("hunger").innerText = p.hunger;
+  function buildOverlayMap(overlayList) {
+    // key "x,y" => t
+    const m = new Map();
+    overlayList.forEach(o => {
+      m.set(`${o.x},${o.y}`, o.t);
+    });
+    return m;
+  }
 
-  document.getElementById("inv_food").innerText  = p.inventory.food ?? 0;
-  document.getElementById("inv_wood").innerText  = p.inventory.wood ?? 0;
-  document.getElementById("inv_stone").innerText = p.inventory.stone ?? 0;
-  document.getElementById("inv_sword").innerText = p.inventory.sword ?? 0;
+  function drawMinimap(tilesRows, overlayMap, worldW, worldH, playerX, playerY) {
+    const mw = mini.width;
+    const mh = mini.height;
 
-  document.getElementById("planview").innerText = "plan: " + JSON.stringify(p.current_plan ?? []);
-}
+    const sx = worldW / mw;
+    const sy = worldH / mh;
 
-async function buy(item, qty) {
-  if (!playerId) { alert("Spawn Player prima!"); return; }
-  await fetch(`/player/${playerId}/buy/${item}?qty=${qty}`, { method: "POST" });
-  await refreshPlayerPanel();
-}
+    const img = mctx.createImageData(mw, mh);
+    const data = img.data;
 
-async function sendCommand() {
-  if (!playerId) { alert("Spawn Player prima!"); return; }
-  const text = document.getElementById("cmd").value.trim();
-  const horizon = document.getElementById("horizon").value;
-  if (!text) return;
+    for (let y = 0; y < mh; y++) {
+      const wy = Math.min(worldH - 1, Math.floor(y * sy));
+      const row = tilesRows[wy];
+      for (let x = 0; x < mw; x++) {
+        const wx = Math.min(worldW - 1, Math.floor(x * sx));
+        const t = row[wx];
 
-  await fetch(`/player/${playerId}/command`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text, horizon })
-  });
+        let r=255, g=255, b=255;
+        if (t === "G") { r=124; g=252; b=144; }
+        else if (t === "F") { r=46; g=139; b=87; }
+        else if (t === "M") { r=153; g=153; b=153; }
+        else if (t === "W") { r=77; g=166; b=255; }
 
-  document.getElementById("cmd").value = "";
-  await refreshPlayerPanel();
-}
+        // overlay “dominante” sulla minimap (campionamento semplice)
+        const ov = overlayMap.get(`${wx},${wy}`);
+        if (ov === "R") { r=242; g=209; b=75; }
+        else if (ov === "H") { r=139; g=90; b=43; }
+        else if (ov === "K") { r=255; g=159; b=26; }
 
-setInterval(updateWorld, 200);
-setInterval(refreshPlayerPanel, 600);
+        const i = (y * mw + x) * 4;
+        data[i] = r; data[i+1] = g; data[i+2] = b; data[i+3] = 255;
+      }
+    }
+
+    mctx.putImageData(img, 0, 0);
+
+    if (playerX != null && playerY != null) {
+      const px = Math.floor(playerX / worldW * mw);
+      const py = Math.floor(playerY / worldH * mh);
+      mctx.fillStyle = "red";
+      mctx.fillRect(px - 1, py - 1, 3, 3);
+    }
+  }
+
+  async function update() {
+    const response = await fetch("/state", { cache: "no-store" });
+    const data = await response.json();
+
+    const overlayMap = buildOverlayMap(data.overlay);
+
+    const cellSize = 20;
+    const viewWidth = Math.floor(canvas.width / cellSize);
+    const viewHeight = Math.floor(canvas.height / cellSize);
+
+    // camera segue il TUO player
+    let cameraX = 0;
+    let cameraY = 0;
+
+    let pdata = null;
+    if (playerId) {
+      const pr = await fetch(`/player/${playerId}`, { cache: "no-store" });
+      if (pr.status === 200) {
+        pdata = await pr.json();
+        cameraX = pdata.x - Math.floor(viewWidth / 2);
+        cameraY = pdata.y - Math.floor(viewHeight / 2);
+      }
+    }
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // base tiles
+    for (let y = 0; y < viewHeight; y++) {
+      for (let x = 0; x < viewWidth; x++) {
+        const wx = x + cameraX;
+        const wy = y + cameraY;
+        if (wx < 0 || wy < 0 || wx >= data.width || wy >= data.height) continue;
+
+        const tile = data.tiles[wy][wx];
+        ctx.fillStyle = tileColor(tile);
+        ctx.fillRect(x * cellSize, y * cellSize, cellSize, cellSize);
+
+        // overlay sopra
+        const ov = overlayMap.get(`${wx},${wy}`);
+        if (ov) {
+          const c = overlayColor(ov);
+          if (c) {
+            ctx.fillStyle = c;
+            ctx.fillRect(x * cellSize, y * cellSize, cellSize, cellSize);
+          }
+        }
+      }
+    }
+
+    // risorse (sopra overlay)
+    ctx.fillStyle = "green";
+    data.food.forEach(f => {
+      const sx = (f.x - cameraX) * cellSize;
+      const sy = (f.y - cameraY) * cellSize;
+      ctx.fillRect(sx, sy, cellSize, cellSize);
+    });
+
+    ctx.fillStyle = "brown";
+    data.wood.forEach(w => {
+      const sx = (w.x - cameraX) * cellSize;
+      const sy = (w.y - cameraY) * cellSize;
+      ctx.fillRect(sx, sy, cellSize, cellSize);
+    });
+
+    ctx.fillStyle = "gray";
+    data.stone.forEach(s => {
+      const sx = (s.x - cameraX) * cellSize;
+      const sy = (s.y - cameraY) * cellSize;
+      ctx.fillRect(sx, sy, cellSize, cellSize);
+    });
+
+    // agenti
+    data.agents.forEach(a => {
+      const sx = (a.x - cameraX) * cellSize;
+      const sy = (a.y - cameraY) * cellSize;
+
+      if (a.role === "merchant") ctx.fillStyle = "#FFD700"; // merchant gold
+      else if (a.is_player) ctx.fillStyle = (a.player_id === playerId) ? "red" : "#ff8a8a";
+      else ctx.fillStyle = "blue";
+
+      ctx.fillRect(sx, sy, cellSize, cellSize);
+    });
+
+    document.getElementById("stats").innerText =
+      `Tick: ${data.tick} | Agents: ${data.agents_alive} | Villages: ${countMarkets(data.overlay)}`;
+
+    // HUD + minimap
+    if (pdata) {
+      document.getElementById("pos").innerText = `(${pdata.x}, ${pdata.y})`;
+      document.getElementById("hunger").innerText = `${pdata.hunger}`;
+      document.getElementById("inv_food").innerText = pdata.inventory.food ?? 0;
+      document.getElementById("inv_wood").innerText = pdata.inventory.wood ?? 0;
+      document.getElementById("inv_stone").innerText = pdata.inventory.stone ?? 0;
+
+      drawMinimap(data.tiles, overlayMap, data.width, data.height, pdata.x, pdata.y);
+    } else {
+      drawMinimap(data.tiles, overlayMap, data.width, data.height, null, null);
+    }
+  }
+
+  function countMarkets(overlayList) {
+    let c = 0;
+    overlayList.forEach(o => { if (o.t === "K") c++; });
+    return c;
+  }
+
+  setInterval(update, 250);
 </script>
 
 </body>

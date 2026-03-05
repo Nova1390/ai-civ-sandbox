@@ -1,24 +1,38 @@
 # Mappa
-WIDTH = 20
-HEIGHT = 20
+WIDTH = 100
+HEIGHT = 100
 
 # Inizio simulazione
 NUM_AGENTS = 10
 NUM_FOOD = 30
+NUM_WOOD = 20
+NUM_STONE = 15
 
 # Velocità tick (secondi)
 TICK_SPEED = 0.5
 
-# Cibo persistente
+# Respawn risorse
 FOOD_RESPAWN_PER_TICK = 2
-MAX_FOOD = 50
+WOOD_RESPAWN_PER_TICK = 1
+STONE_RESPAWN_PER_TICK = 1
+
+MAX_FOOD = 150
+MAX_WOOD = 120
+MAX_STONE = 90
 
 # Survival
 AGENT_START_HUNGER = 35
 FOOD_EAT_GAIN = 15
 
-# Riproduzione (solo NPC)
-REPRO_MIN_HUNGER = 40
-REPRO_PROB = 0.20
-REPRO_COST = 15
-MAX_AGENTS = 60
+# Tilemap / biomi (probabilità)
+P_GRASS = 0.55
+P_FOREST = 0.25
+P_MOUNTAIN = 0.15
+P_WATER = 0.05
+
+# Villaggi
+NUM_VILLAGES_MIN = 2
+NUM_VILLAGES_MAX = 4
+VILLAGE_RADIUS = 4          # “dimensione” villaggio
+VILLAGE_HOUSES_MIN = 6
+VILLAGE_HOUSES_MAX = 12

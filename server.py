@@ -40,24 +40,29 @@ def get_state():
             "hunger": a.hunger,
             "is_player": a.is_player,
             "player_id": a.player_id,
+            "role": a.role,
             "current_goal": a.current_goal,
         }
         for a in world.agents
     ]
-    food = [{"x": fx, "y": fy} for (fx, fy) in world.food]
+
+    food = [{"x": x, "y": y} for (x, y) in world.food]
+    wood = [{"x": x, "y": y} for (x, y) in world.wood]
+    stone = [{"x": x, "y": y} for (x, y) in world.stone]
+
+    tiles_rows = ["".join(row) for row in world.tiles]
+
+    overlay = [{"x": x, "y": y, "t": t} for (x, y), t in world.overlay.items()]
 
     return {
         "tick": world.tick,
         "agents_alive": len(world.agents),
-        "food_count": len(world.food),
-        "last_births": world.last_births,
-        "last_deaths": world.last_deaths,
-        "last_eaten": world.last_eaten,
-        "total_births": world.total_births,
-        "total_deaths": world.total_deaths,
-        "total_eaten": world.total_eaten,
         "agents": agents,
         "food": food,
+        "wood": wood,
+        "stone": stone,
+        "tiles": tiles_rows,
+        "overlay": overlay,
         "width": WIDTH,
         "height": HEIGHT,
     }
@@ -72,15 +77,24 @@ def find_player(player_id: str) -> Agent:
 
 @app.post("/spawn_player")
 def spawn_player():
-    x = random.randint(0, WIDTH - 1)
-    y = random.randint(0, HEIGHT - 1)
+    while True:
+        x = random.randint(0, WIDTH - 1)
+        y = random.randint(0, HEIGHT - 1)
+        if world.is_walkable(x, y):
+            break
 
     pid = str(uuid4())
 
-    # per ora: brain semplice così si muove e sopravvive
-    player = Agent(x, y, brain=FoodBrain(), is_player=True, player_id=pid)
-    player.inventory["food"] = 5
+    player = Agent(
+        x,
+        y,
+        brain=FoodBrain(),
+        is_player=True,
+        player_id=pid,
+        role="player",
+    )
 
+    player.inventory["food"] = 5
     world.agents.append(player)
 
     return {"status": "spawned", "player_id": pid, "x": x, "y": y}
@@ -95,31 +109,18 @@ def get_player(player_id: str):
         "y": p.y,
         "hunger": p.hunger,
         "inventory": p.inventory,
+        "traits": p.traits,
+        "personality": p.personality,
+        "role": p.role,
         "current_goal": p.current_goal,
         "current_plan": p.current_plan,
         "goals_queue": p.goals_queue,
     }
 
 
-@app.post("/player/{player_id}/buy/{item}")
-def buy_item(player_id: str, item: str, qty: int = 1):
-    if qty < 1 or qty > 100:
-        raise HTTPException(status_code=400, detail="qty must be 1..100")
-
-    p = find_player(player_id)
-
-    if item not in p.inventory:
-        raise HTTPException(status_code=400, detail="Unknown item")
-
-    # TODO: qui poi verificheremo una tx Solana prima di accreditare
-    p.inventory[item] += qty
-
-    return {"status": "ok", "inventory": p.inventory}
-
-
 class Command(BaseModel):
     text: str
-    horizon: str = "short"  # short|medium|long (per ora solo label)
+    horizon: str = "short"
 
 
 @app.post("/player/{player_id}/command")
@@ -127,7 +128,7 @@ def player_command(player_id: str, command: Command):
     p = find_player(player_id)
     goal = {"text": command.text, "horizon": command.horizon}
     p.goals_queue.append(goal)
-    return {"status": "goal_added", "goal": goal, "queue_len": len(p.goals_queue)}
+    return {"status": "goal_added", "goal": goal}
 
 
 @app.get("/grid", response_class=PlainTextResponse)
