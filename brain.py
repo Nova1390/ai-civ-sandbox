@@ -10,42 +10,84 @@ from pathfinder import astar
 
 Coord = Tuple[int, int]
 
+VALID_GOALS = {
+    "expand village",
+    "gather food",
+    "gather wood",
+    "gather stone",
+    "explore",
+}
+
+
+def normalize_goal(text: str) -> Optional[str]:
+    t = (text or "").strip().lower()
+
+    if not t:
+        return None
+
+    if "wood" in t or "legn" in t or "tree" in t:
+        return "gather wood"
+
+    if "stone" in t or "rock" in t or "pietr" in t:
+        return "gather stone"
+
+    if "food" in t or "hunt" in t or "eat" in t or "cibo" in t or "farm" in t:
+        return "gather food"
+
+    if "expand" in t or "build" in t or "house" in t or "village" in t:
+        return "expand village"
+
+    if "explore" in t or "esplora" in t:
+        return "explore"
+
+    if t in VALID_GOALS:
+        return t
+
+    return None
+
 
 class FoodBrain:
     def __init__(self, vision_radius: int = 8):
         self.vision_radius = vision_radius
 
     def decide(self, agent, world) -> Tuple[str, ...]:
-        # strategia villaggio: piccolo bias per leader e membri
-        village_strategy = ""
-        if getattr(agent, "village_id", None) is not None:
-            village = world.get_village_by_id(agent.village_id)
-            if village:
-                village_strategy = (village.get("strategy") or "").lower()
+        village_strategy = self._get_village_strategy(agent, world)
+        village = world.get_village_by_id(getattr(agent, "village_id", None))
+        relation = (village.get("relation", "") if village else "").lower()
 
-        # priorità fame sempre prima
+        # survival sempre prima
         if agent.hunger < 60 or agent.inventory.get("food", 0) == 0:
+            farm_target = self.find_farm_target(agent, world, prefer_ripe=True)
+            if farm_target is not None:
+                return self.move_towards(agent, world, farm_target)
+
             target = self.find_nearest(agent, world.food, "food", self.vision_radius)
             if target is not None:
                 return self.move_towards(agent, world, target)
 
-        # bias strategico
-        if "food" in village_strategy:
-            target = self.find_nearest(agent, world.food, "food", self.vision_radius)
-            if target is not None:
-                return self.move_towards(agent, world, target)
+        # migrazione
+        if relation == "migrate" and village:
+            migration_target_id = village.get("migration_target_id")
+            migration_target = world.get_village_by_id(migration_target_id)
+            if migration_target:
+                center = migration_target.get("center")
+                if center:
+                    return self.move_towards(agent, world, (center["x"], center["y"]))
 
-        if "wood" in village_strategy or "expand" in village_strategy or "build" in village_strategy:
-            if agent.inventory.get("wood", 0) < 5:
-                target = self.find_nearest(agent, world.wood, "wood", self.vision_radius)
-                if target is not None:
-                    return self.move_towards(agent, world, target)
+        # guerra
+        if relation == "war" and village:
+            target_village_id = village.get("target_village_id")
+            enemy = world.get_village_by_id(target_village_id)
+            if enemy:
+                center = enemy.get("center")
+                if center and random.random() < 0.45:
+                    return self.move_towards(agent, world, (center["x"], center["y"]))
 
-        if "stone" in village_strategy or "expand" in village_strategy or "build" in village_strategy:
-            if agent.inventory.get("stone", 0) < 3:
-                target = self.find_nearest(agent, world.stone, "stone", self.vision_radius)
-                if target is not None:
-                    return self.move_towards(agent, world, target)
+        # strategia del villaggio
+        if village_strategy:
+            action = self._decide_from_strategy(agent, world, village_strategy)
+            if action is not None:
+                return action
 
         # comportamento base
         if agent.inventory.get("wood", 0) < 5:
@@ -58,7 +100,85 @@ class FoodBrain:
             if target is not None:
                 return self.move_towards(agent, world, target)
 
+        village_home = self._get_known_village_center(agent, world)
+        if village_home is not None and random.random() < 0.35:
+            return self.move_towards(agent, world, village_home)
+
         return self.wander(agent, world)
+
+    def _get_village_strategy(self, agent, world) -> str:
+        village_id = getattr(agent, "village_id", None)
+        if village_id is None:
+            return ""
+
+        village = world.get_village_by_id(village_id)
+        if not village:
+            return ""
+
+        return str(village.get("strategy", "")).lower().strip()
+
+    def _get_known_village_center(self, agent, world) -> Optional[Coord]:
+        village_id = getattr(agent, "village_id", None)
+        if village_id is not None:
+            village = world.get_village_by_id(village_id)
+            if village:
+                c = village.get("center")
+                if c:
+                    return (c["x"], c["y"])
+
+        mem = agent.memory.get("villages", set())
+        if mem:
+            ax, ay = agent.x, agent.y
+            return min(mem, key=lambda p: abs(p[0] - ax) + abs(p[1] - ay))
+
+        return None
+
+    def _decide_from_strategy(self, agent, world, strategy: str) -> Optional[Tuple[str, ...]]:
+        if "food" in strategy or "hunt" in strategy or "eat" in strategy or "farm" in strategy:
+            farm_target = self.find_farm_target(agent, world, prefer_ripe=True)
+            if farm_target is not None:
+                return self.move_towards(agent, world, farm_target)
+
+            target = self.find_nearest(agent, world.food, "food", self.vision_radius + 2)
+            if target is not None:
+                return self.move_towards(agent, world, target)
+
+        if "wood" in strategy or "tree" in strategy or "legn" in strategy:
+            target = self.find_nearest(agent, world.wood, "wood", self.vision_radius + 2)
+            if target is not None:
+                return self.move_towards(agent, world, target)
+
+        if "stone" in strategy or "rock" in strategy or "pietr" in strategy:
+            target = self.find_nearest(agent, world.stone, "stone", self.vision_radius + 2)
+            if target is not None:
+                return self.move_towards(agent, world, target)
+
+        if "expand" in strategy or "build" in strategy or "village" in strategy or "house" in strategy:
+            # se il villaggio ha pochi campi, prova a crearne/gestirne alcuni
+            if len(getattr(world, "farm_plots", {})) < max(2, len(getattr(world, "villages", [])) * 2):
+                farm_target = self.find_farm_target(agent, world, prefer_ripe=False)
+                if farm_target is not None:
+                    return self.move_towards(agent, world, farm_target)
+
+            if agent.inventory.get("wood", 0) < 8:
+                target = self.find_nearest(agent, world.wood, "wood", self.vision_radius + 2)
+                if target is not None:
+                    return self.move_towards(agent, world, target)
+
+            if agent.inventory.get("stone", 0) < 5:
+                target = self.find_nearest(agent, world.stone, "stone", self.vision_radius + 2)
+                if target is not None:
+                    return self.move_towards(agent, world, target)
+
+            village_home = self._get_known_village_center(agent, world)
+            if village_home is not None:
+                return self.move_towards(agent, world, village_home)
+
+        if "explore" in strategy or "esplora" in strategy:
+            if random.random() < 0.75:
+                return self.wander(agent, world)
+
+        return None
 
     def find_nearest(
         self,
@@ -75,7 +195,6 @@ class FoodBrain:
 
         for (x, y) in resource_set:
             d = abs(x - ax) + abs(y - ay)
-
             if d <= radius and d < best_d:
                 best_d = d
                 best = (x, y)
@@ -85,10 +204,56 @@ class FoodBrain:
 
         for (x, y) in agent.memory.get(memory_key, set()):
             d = abs(x - ax) + abs(y - ay)
-
             if d < best_d:
                 best_d = d
                 best = (x, y)
+
+        return best
+
+    def find_farm_target(self, agent, world, prefer_ripe: bool = True) -> Optional[Coord]:
+        ax = agent.x
+        ay = agent.y
+
+        best: Optional[Coord] = None
+        best_score = 999999
+
+        known_farms = set(agent.memory.get("farms", set()))
+        known_farms.update(getattr(world, "farms", set()))
+
+        for pos in known_farms:
+            plot = getattr(world, "farm_plots", {}).get(pos)
+            if not plot:
+                continue
+
+            state = plot.get("state", "prepared")
+            d = abs(pos[0] - ax) + abs(pos[1] - ay)
+
+            if prefer_ripe:
+                if state == "ripe":
+                    score = d
+                elif state == "prepared":
+                    score = d + 4
+                elif state == "planted":
+                    score = d + 20
+                elif state == "growing":
+                    score = d + 12
+                else:
+                    score = d + 50
+            else:
+                if state == "prepared":
+                    score = d
+                elif state == "ripe":
+                    score = d + 2
+                elif state == "growing":
+                    score = d + 10
+                elif state == "planted":
+                    score = d + 14
+                else:
+                    score = d + 50
+
+            if score < best_score:
+                best_score = score
+                best = pos
 
         return best
 
@@ -112,7 +277,6 @@ class FoodBrain:
 
     def greedy_step(self, agent, world, target: Coord) -> Tuple[str, ...]:
         tx, ty = target
-
         options = []
 
         if tx > agent.x:
@@ -150,7 +314,7 @@ class FoodBrain:
 
 
 class LLMBrain:
-    def __init__(self, planner: Planner, fallback: FoodBrain, think_every_ticks: int = 120):
+    def __init__(self, planner: Planner, fallback: FoodBrain, think_every_ticks: int = 240):
         self.planner = planner
         self.fallback = fallback
         self.think_every_ticks = think_every_ticks
@@ -192,15 +356,21 @@ class LLMBrain:
 
     async def _request_goal(self, agent, world, prompt: str) -> None:
         try:
-            goal = await self.planner.propose_goal_async(prompt)
-            agent.goal = goal or "survive"
+            raw_goal = await self.planner.propose_goal_async(prompt)
+            normalized = normalize_goal(raw_goal)
+
+            if normalized is None:
+                print(f"LLM invalid goal: {raw_goal}")
+                return
+
+            agent.goal = normalized
             print(f"LLM goal ({agent.role}): {agent.goal}")
 
-            # se è leader, aggiorna strategia villaggio
             if getattr(agent, "role", "") == "leader" and getattr(agent, "village_id", None) is not None:
                 village = world.get_village_by_id(agent.village_id)
                 if village is not None:
-                    village["strategy"] = agent.goal
+                    village["strategy"] = normalized
+
         except Exception as e:
             print(f"LLM error: {e}")
         finally:
@@ -209,41 +379,42 @@ class LLMBrain:
     def _act_from_goal(self, agent, world) -> Tuple[str, ...]:
         g = (agent.goal or "").lower()
 
-        if "wood" in g or "legn" in g or "tree" in g:
-            if agent.inventory.get("wood", 0) < 8:
-                target = self.fallback.find_nearest(
-                    agent, world.wood, "wood", self.fallback.vision_radius
-                )
-                if target is not None:
-                    return self.fallback.move_towards(agent, world, target)
+        if "food" in g or "cibo" in g or "eat" in g or "hunt" in g or "farm" in g:
+            farm_target = self.fallback.find_farm_target(agent, world, prefer_ripe=True)
+            if farm_target is not None:
+                return self.fallback.move_towards(agent, world, farm_target)
 
-        if "stone" in g or "pietr" in g or "rock" in g:
-            if agent.inventory.get("stone", 0) < 6:
-                target = self.fallback.find_nearest(
-                    agent, world.stone, "stone", self.fallback.vision_radius
-                )
-                if target is not None:
-                    return self.fallback.move_towards(agent, world, target)
-
-        if "food" in g or "cibo" in g or "eat" in g or "hunt" in g:
             target = self.fallback.find_nearest(
-                agent, world.food, "food", self.fallback.vision_radius
+                agent, world.food, "food", self.fallback.vision_radius + 2
             )
             if target is not None:
                 return self.fallback.move_towards(agent, world, target)
 
-        if "expand" in g or "build" in g or "village" in g:
-            # bias su wood/stone per costruire
+        if "wood" in g or "legn" in g or "tree" in g:
+            target = self.fallback.find_nearest(
+                agent, world.wood, "wood", self.fallback.vision_radius + 2
+            )
+            if target is not None:
+                return self.fallback.move_towards(agent, world, target)
+
+        if "stone" in g or "pietr" in g or "rock" in g:
+            target = self.fallback.find_nearest(
+                agent, world.stone, "stone", self.fallback.vision_radius + 2
+            )
+            if target is not None:
+                return self.fallback.move_towards(agent, world, target)
+
+        if "expand" in g or "build" in g or "village" in g or "house" in g:
             if agent.inventory.get("wood", 0) < 8:
                 target = self.fallback.find_nearest(
-                    agent, world.wood, "wood", self.fallback.vision_radius
+                    agent, world.wood, "wood", self.fallback.vision_radius + 2
                 )
                 if target is not None:
                     return self.fallback.move_towards(agent, world, target)
 
             if agent.inventory.get("stone", 0) < 5:
                 target = self.fallback.find_nearest(
-                    agent, world.stone, "stone", self.fallback.vision_radius
+                    agent, world.stone, "stone", self.fallback.vision_radius + 2
                 )
                 if target is not None:
                     return self.fallback.move_towards(agent, world, target)
@@ -265,13 +436,18 @@ class LLMBrain:
                     f"village_houses={village['houses']}\n"
                     f"village_population={village['population']}\n"
                     f"current_strategy={village.get('strategy', 'none')}\n"
+                    f"relation={village.get('relation', 'peace')}\n"
+                    f"target_village_id={village.get('target_village_id')}\n"
+                    f"migration_target_id={village.get('migration_target_id')}\n"
+                    f"power={village.get('power', 0)}\n"
+                    f"farms={len(getattr(world, 'farm_plots', {}))}\n"
                 )
 
         if role == "leader":
             return (
                 "You are the leader of a village in a tile world.\n"
-                "Return only a short JSON object.\n"
-                'Format: {"goal":"expand village|gather food|gather wood|gather stone|explore"}\n'
+                "Return only one short goal.\n"
+                "Allowed goals: expand village, gather food, gather wood, gather stone, explore.\n"
                 f"{village_summary}"
                 f"tick={world.tick}\n"
                 f"position=({agent.x},{agent.y})\n"
@@ -281,8 +457,8 @@ class LLMBrain:
 
         return (
             "You are the high-level brain of a player character in a tile world.\n"
-            "Return only a short JSON object.\n"
-            'Format: {"goal":"gather food|gather wood|gather stone|explore"}\n'
+            "Return only one short goal.\n"
+            "Allowed goals: gather food, gather wood, gather stone, explore.\n"
             f"tick={world.tick}\n"
             f"position=({agent.x},{agent.y})\n"
             f"hunger={agent.hunger}\n"

@@ -20,7 +20,7 @@ world = World()
 npc_brain = FoodBrain(vision_radius=8)
 planner = Planner(model="phi3")
 player_brain = LLMBrain(planner=planner, fallback=npc_brain, think_every_ticks=60)
-leader_brain = LLMBrain(planner=planner, fallback=npc_brain, think_every_ticks=120)
+leader_brain = LLMBrain(planner=planner, fallback=npc_brain, think_every_ticks=240)
 
 SPRITES_DIR = "sprites"
 app.mount("/sprites", StaticFiles(directory=SPRITES_DIR), name="sprites")
@@ -101,6 +101,18 @@ def get_state():
     if alive_agents:
         avg_hunger = sum(a.hunger for a in alive_agents) / len(alive_agents)
 
+    farms = []
+    for plot in world.farm_plots.values():
+        farms.append(
+            {
+                "x": plot["x"],
+                "y": plot["y"],
+                "state": plot.get("state", "prepared"),
+                "growth": plot.get("growth", 0),
+                "village_id": plot.get("village_id"),
+            }
+        )
+
     return {
         "tick": world.tick,
         "width": world.width,
@@ -109,8 +121,11 @@ def get_state():
         "food": [{"x": x, "y": y} for x, y in world.food],
         "wood": [{"x": x, "y": y} for x, y in world.wood],
         "stone": [{"x": x, "y": y} for x, y in world.stone],
+        "farms": farms,
+        "farms_count": len(world.farm_plots),
         "structures": [{"x": x, "y": y} for x, y in world.structures],
         "villages": world.villages,
+        "civ_stats": world.get_civilization_stats(),
         "agents": [
             {
                 "x": a.x,
@@ -133,6 +148,8 @@ def get_state():
         "villages_count": len(world.villages),
         "leaders_count": world.count_leaders(),
         "llm_interactions": world.llm_interactions,
+        "roads": [{"x": x, "y": y} for x, y in world.roads],
+        "storage_buildings": [{"x": x, "y": y} for x, y in world.storage_buildings],
     }
 
 

@@ -21,14 +21,17 @@
     font-size: 12px;
     line-height: 1.4;
   }
-  button { padding: 8px 10px; }
+  button { padding: 8px 10px; margin-right: 6px; }
 </style>
 </head>
 <body>
 
 <h2>AI MMORPG WORLD</h2>
 
-<button onclick="spawnPlayer()">Spawn Player</button>
+<div style="margin-bottom:10px;">
+  <button onclick="spawnPlayer()">Spawn Player</button>
+  <button onclick="toggleFollowPlayer()" id="followBtn">Follow Player: ON</button>
+</div>
 
 <div class="row" style="margin-top:12px;">
   <div>
@@ -48,6 +51,8 @@
       <div><span class="box" style="background:blue"></span> NPC</div>
       <div><span class="box" style="background:gold"></span> Village center</div>
       <div><span class="box" style="background:orange"></span> Leader</div>
+      <div><span class="box" style="background:#5b3a29"></span> Storage</div>
+      <div><span class="box" style="background:#c7a94a"></span> Farm zone center</div>
 
       <div style="margin-top:8px;"><b>Tiles</b></div>
       <div><span class="box" style="background:#6fcf6a"></span> Grass (G)</div>
@@ -60,8 +65,21 @@
       <div><span class="box" style="background:#0b3d1e"></span> Wood</div>
       <div><span class="box" style="background:#d3d3d3"></span> Stone</div>
       <div><span class="box" style="background:#8b4513"></span> House</div>
+      <div><span class="box" style="background:#5b3a29"></span> Storage building</div>
+      <div><span class="box" style="background:#c2a27a"></span> Road</div>
+      <div><span class="box" style="background:#b38b5a"></span> Farm prepared</div>
+      <div><span class="box" style="background:#2f6f2f"></span> Farm planted</div>
+      <div><span class="box" style="background:#4caf50"></span> Farm growing</div>
+      <div><span class="box" style="background:#d4b000"></span> Farm ripe</div>
       <div><span class="box" style="background:rgba(255,215,0,0.25)"></span> Village influence</div>
       <div><span class="box" style="background:rgba(255,80,0,0.25)"></span> Population heat</div>
+
+      <div style="margin-top:8px;"><b>Controls</b></div>
+      <div>Mouse drag = move camera</div>
+      <div>Wheel = zoom</div>
+      <div>WASD / Arrows = move camera</div>
+      <div>Minimap click = jump camera</div>
+      <div>F = toggle follow player</div>
     </div>
   </div>
 </div>
@@ -74,6 +92,23 @@ const minimap = document.getElementById("minimap");
 const mctx = minimap.getContext("2d");
 
 let playerId = null;
+let latestState = null;
+
+let followPlayer = true;
+let cameraX = 0;
+let cameraY = 0;
+
+let cellSize = 32;
+const MIN_CELL_SIZE = 12;
+const MAX_CELL_SIZE = 64;
+
+let isDragging = false;
+let dragStartX = 0;
+let dragStartY = 0;
+let dragCameraStartX = 0;
+let dragCameraStartY = 0;
+
+const keys = new Set();
 
 function tileColor(t) {
   if (t === "G") return "#6fcf6a";
@@ -83,10 +118,48 @@ function tileColor(t) {
   return "#ffffff";
 }
 
+function strategyColor(strategy) {
+  const s = (strategy || "").toLowerCase();
+  if (s.includes("food") || s.includes("hunt") || s.includes("eat")) return "lime";
+  if (s.includes("wood") || s.includes("tree") || s.includes("legn")) return "#6b4f2a";
+  if (s.includes("stone") || s.includes("rock") || s.includes("pietr")) return "#bbbbbb";
+  if (s.includes("expand") || s.includes("build") || s.includes("house") || s.includes("village")) return "gold";
+  if (s.includes("explore") || s.includes("esplora")) return "violet";
+  return "gold";
+}
+
+function farmColor(state) {
+  if (state === "prepared") return "#b38b5a";
+  if (state === "planted") return "#2f6f2f";
+  if (state === "growing") return "#4caf50";
+  if (state === "ripe") return "#d4b000";
+  return "#b38b5a";
+}
+
+function relationLabel(v) {
+  return v.relation || "peace";
+}
+
+function toggleFollowPlayer() {
+  followPlayer = !followPlayer;
+  document.getElementById("followBtn").textContent =
+    `Follow Player: ${followPlayer ? "ON" : "OFF"}`;
+}
+
 async function spawnPlayer() {
   const r = await fetch("/spawn_player", { method: "POST" });
   const data = await r.json();
   playerId = data.player_id || null;
+  followPlayer = true;
+  document.getElementById("followBtn").textContent = "Follow Player: ON";
+}
+
+function clampCamera(data) {
+  const viewW = Math.floor(canvas.width / cellSize);
+  const viewH = Math.floor(canvas.height / cellSize);
+
+  cameraX = Math.max(0, Math.min(cameraX, Math.max(0, data.width - viewW)));
+  cameraY = Math.max(0, Math.min(cameraY, Math.max(0, data.height - viewH)));
 }
 
 function drawMinimapCircle(x, y, radius, color) {
@@ -96,7 +169,17 @@ function drawMinimapCircle(x, y, radius, color) {
   mctx.fill();
 }
 
-function renderMinimap(data, cameraX, cameraY, viewW, viewH) {
+function buildHouseColorMap(villages) {
+  const map = new Map();
+  for (const v of (villages || [])) {
+    for (const tile of (v.tiles || [])) {
+      map.set(`${tile.x},${tile.y}`, v.color || "#8b4513");
+    }
+  }
+  return map;
+}
+
+function renderMinimap(data, camX, camY, viewW, viewH) {
   if (!data || !data.tiles) return;
 
   const w = minimap.width;
@@ -117,21 +200,35 @@ function renderMinimap(data, cameraX, cameraY, viewW, viewH) {
   (data.villages || []).forEach(v => {
     const cx = v.center.x * sx;
     const cy = v.center.y * sy;
-    const influenceRadius = Math.max(6, (v.houses || 1) * 0.9);
-    drawMinimapCircle(cx, cy, influenceRadius, "rgba(255, 215, 0, 0.14)");
+    const influenceRadius = Math.max(10, (v.houses || 1) * 1.3);
+    drawMinimapCircle(cx, cy, influenceRadius, "rgba(255, 215, 0, 0.22)");
   });
 
   (data.villages || []).forEach(v => {
     const cx = v.center.x * sx;
     const cy = v.center.y * sy;
     const pop = v.population || 0;
-    const heatRadius = Math.max(4, pop * 0.45);
-    const alpha = Math.min(0.28, 0.04 + pop * 0.01);
+    const heatRadius = Math.max(6, pop * 0.7);
+    const alpha = Math.min(0.40, 0.08 + pop * 0.015);
     drawMinimapCircle(cx, cy, heatRadius, `rgba(255, 80, 0, ${alpha})`);
   });
 
+  // roads
+  (data.roads || []).forEach(r => {
+    mctx.fillStyle = "#c2a27a";
+    mctx.fillRect(
+      r.x * sx,
+      r.y * sy,
+      Math.max(1.5, sx),
+      Math.max(1.5, sy)
+    );
+  });
+
+  const houseColorMap = buildHouseColorMap(data.villages);
+
   (data.structures || []).forEach(house => {
-    mctx.fillStyle = "#5a2d0c";
+    const color = houseColorMap.get(`${house.x},${house.y}`) || "#5a2d0c";
+    mctx.fillStyle = color;
     mctx.fillRect(
       house.x * sx,
       house.y * sy,
@@ -140,13 +237,54 @@ function renderMinimap(data, cameraX, cameraY, viewW, viewH) {
     );
   });
 
+  (data.storage_buildings || []).forEach(s => {
+    mctx.fillStyle = "#5b3a29";
+    mctx.fillRect(
+      s.x * sx,
+      s.y * sy,
+      Math.max(2, sx),
+      Math.max(2, sy)
+    );
+  });
+
+  (data.farms || []).forEach(f => {
+    mctx.fillStyle = farmColor(f.state);
+    mctx.fillRect(
+      f.x * sx,
+      f.y * sy,
+      Math.max(2, sx),
+      Math.max(2, sy)
+    );
+  });
+
+  (data.villages || []).forEach(v => {
+    const storagePos = v.storage_pos;
+    if (storagePos) {
+      mctx.fillStyle = "#5b3a29";
+      mctx.fillRect(
+        storagePos.x * sx,
+        storagePos.y * sy,
+        Math.max(2, sx),
+        Math.max(2, sy)
+      );
+    }
+
+    const farmZone = v.farm_zone_center;
+    if (farmZone) {
+      mctx.beginPath();
+      mctx.arc(farmZone.x * sx, farmZone.y * sy, 2.5, 0, Math.PI * 2);
+      mctx.fillStyle = "#c7a94a";
+      mctx.fill();
+    }
+  });
+
   (data.villages || []).forEach(v => {
     const cx = v.center.x * sx;
     const cy = v.center.y * sy;
 
     mctx.beginPath();
-    mctx.arc(cx, cy, 3, 0, Math.PI * 2);
-    mctx.fillStyle = "gold";
+    mctx.arc(cx, cy, 3.5, 0, Math.PI * 2);
+    mctx.fillStyle = strategyColor(v.strategy);
     mctx.fill();
 
     mctx.strokeStyle = "#222";
@@ -160,7 +298,7 @@ function renderMinimap(data, cameraX, cameraY, viewW, viewH) {
 
     if (a.role === "leader") {
       mctx.beginPath();
-      mctx.arc(ax, ay, 3.5, 0, Math.PI * 2);
+      mctx.arc(ax, ay, 4, 0, Math.PI * 2);
       mctx.fillStyle = "orange";
       mctx.fill();
       return;
@@ -178,39 +316,104 @@ function renderMinimap(data, cameraX, cameraY, viewW, viewH) {
   mctx.strokeStyle = "#000";
   mctx.lineWidth = 1;
   mctx.strokeRect(
-    cameraX * sx,
-    cameraY * sy,
+    camX * sx,
+    camY * sy,
     viewW * sx,
     viewH * sy
   );
 }
 
+function renderVillageSummary(data) {
+  const villages = [...(data.villages || [])]
+    .sort((a, b) => (b.houses || 0) - (a.houses || 0))
+    .slice(0, 6);
+
+  if (villages.length === 0) {
+    return "villages_detail: -";
+  }
+
+  const lines = villages.map(v => {
+    const leader = v.leader_id ? "yes" : "no";
+    const target = v.target_village_id ? ` target=#${v.target_village_id}` : "";
+    const mig = v.migration_target_id ? ` migrate_to=#${v.migration_target_id}` : "";
+    const s = v.storage || { food: 0, wood: 0, stone: 0 };
+
+    return `#${v.id} houses=${v.houses} pop=${v.population} leader=${leader} strategy=${v.strategy} relation=${relationLabel(v)} food=${s.food ?? 0} wood=${s.wood ?? 0} stone=${s.stone ?? 0}${target}${mig}`;
+  });
+
+  return "<b>VILLAGES</b><br>" + lines.join("<br>");
+}
+
+function renderCivilizationSummary(data) {
+  const c = data.civ_stats || {};
+  const villages = data.villages || [];
+
+  let totalStoredFood = 0;
+  let totalStoredWood = 0;
+  let totalStoredStone = 0;
+
+  villages.forEach(v => {
+    const s = v.storage || {};
+    totalStoredFood += s.food || 0;
+    totalStoredWood += s.wood || 0;
+    totalStoredStone += s.stone || 0;
+  });
+
+  return `
+<b>CIVILIZATION</b><br>
+largest_village: ${c.largest_village_id ?? "-"} (houses=${c.largest_village_houses ?? 0})<br>
+strongest_village: ${c.strongest_village_id ?? "-"} (power=${c.strongest_village_power ?? 0})<br>
+expanding_village: ${c.expanding_village_id ?? "-"}<br>
+warring_villages: ${c.warring_villages ?? 0}<br>
+migrating_villages: ${c.migrating_villages ?? 0}<br>
+stored_food: ${totalStoredFood}<br>
+stored_wood: ${totalStoredWood}<br>
+stored_stone: ${totalStoredStone}
+`;
+}
+
+function applyKeyboardCamera(data) {
+  if (followPlayer) return;
+
+  let speed = 1;
+  if (keys.has("Shift")) speed = 2;
+
+  if (keys.has("ArrowLeft") || keys.has("a") || keys.has("A")) cameraX -= speed;
+  if (keys.has("ArrowRight") || keys.has("d") || keys.has("D")) cameraX += speed;
+  if (keys.has("ArrowUp") || keys.has("w") || keys.has("W")) cameraY -= speed;
+  if (keys.has("ArrowDown") || keys.has("s") || keys.has("S")) cameraY += speed;
+
+  clampCamera(data);
+}
+
 async function update() {
   const r = await fetch("/state", { cache: "no-store" });
   const data = await r.json();
+  latestState = data;
 
-  const cellSize = 32;
-  const viewW = Math.floor(canvas.width / cellSize);
-  const viewH = Math.floor(canvas.height / cellSize);
-
-  let cameraX = 0;
-  let cameraY = 0;
   let playerData = null;
-
   if (playerId) {
     const pr = await fetch(`/player/${playerId}`, { cache: "no-store" });
     if (pr.status === 200) {
       playerData = await pr.json();
-      cameraX = playerData.x - Math.floor(viewW / 2);
-      cameraY = playerData.y - Math.floor(viewH / 2);
     }
   }
 
-  cameraX = Math.max(0, Math.min(cameraX, data.width - viewW));
-  cameraY = Math.max(0, Math.min(cameraY, data.height - viewH));
+  const viewW = Math.floor(canvas.width / cellSize);
+  const viewH = Math.floor(canvas.height / cellSize);
+
+  if (followPlayer && playerData) {
+    cameraX = playerData.x - Math.floor(viewW / 2);
+    cameraY = playerData.y - Math.floor(viewH / 2);
+  } else {
+    applyKeyboardCamera(data);
+  }
+
+  clampCamera(data);
 
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+  // tiles
   for (let y = 0; y < viewH; y++) {
     for (let x = 0; x < viewW; x++) {
       const wx = x + cameraX;
@@ -223,6 +426,25 @@ async function update() {
       ctx.fillRect(x * cellSize, y * cellSize, cellSize, cellSize);
     }
   }
+
+  // roads
+  (data.roads || []).forEach(r => {
+    const sx = (r.x - cameraX) * cellSize;
+    const sy = (r.y - cameraY) * cellSize;
+
+    if (sx < -cellSize || sy < -cellSize || sx > canvas.width || sy > canvas.height) {
+      return;
+    }
+
+    const pad = Math.floor(cellSize * 0.38);
+    ctx.fillStyle = "#c2a27a";
+    ctx.fillRect(
+      sx + pad,
+      sy + pad,
+      cellSize - pad * 2,
+      cellSize - pad * 2
+    );
+  });
 
   function drawCell(x, y, color) {
     const sx = (x - cameraX) * cellSize;
@@ -237,10 +459,14 @@ async function update() {
     ctx.fillRect(sx + pad, sy + pad, cellSize - pad * 2, cellSize - pad * 2);
   }
 
+  // resources
   (data.food || []).forEach(f => drawCell(f.x, f.y, "#00aa00"));
   (data.wood || []).forEach(w => drawCell(w.x, w.y, "#0b3d1e"));
   (data.stone || []).forEach(s => drawCell(s.x, s.y, "#d3d3d3"));
 
+  const houseColorMap = buildHouseColorMap(data.villages);
+
+  // houses
   (data.structures || []).forEach(h => {
     const sx = (h.x - cameraX) * cellSize;
     const sy = (h.y - cameraY) * cellSize;
@@ -249,12 +475,94 @@ async function update() {
       return;
     }
 
-    ctx.fillStyle = "#8b4513";
+    const color = houseColorMap.get(`${h.x},${h.y}`) || "#8b4513";
+    ctx.fillStyle = color;
     ctx.fillRect(sx, sy, cellSize, cellSize);
     ctx.strokeStyle = "#1a1a1a";
     ctx.strokeRect(sx, sy, cellSize, cellSize);
   });
 
+  // storage buildings
+  (data.storage_buildings || []).forEach(s => {
+    const sx = (s.x - cameraX) * cellSize;
+    const sy = (s.y - cameraY) * cellSize;
+
+    if (sx < -cellSize || sy < -cellSize || sx > canvas.width || sy > canvas.height) {
+      return;
+    }
+
+    const pad = Math.floor(cellSize * 0.18);
+    ctx.fillStyle = "#5b3a29";
+    ctx.fillRect(sx + pad, sy + pad, cellSize - pad * 2, cellSize - pad * 2);
+    ctx.strokeStyle = "#f5deb3";
+    ctx.strokeRect(sx + pad, sy + pad, cellSize - pad * 2, cellSize - pad * 2);
+  });
+
+  // storage marker + farm zone center
+  (data.villages || []).forEach(v => {
+    const storagePos = v.storage_pos;
+    if (storagePos) {
+      const sx = (storagePos.x - cameraX) * cellSize;
+      const sy = (storagePos.y - cameraY) * cellSize;
+
+      if (!(sx < -cellSize || sy < -cellSize || sx > canvas.width || sy > canvas.height)) {
+        const pad = Math.floor(cellSize * 0.28);
+        ctx.fillStyle = "#5b3a29";
+        ctx.fillRect(sx + pad, sy + pad, cellSize - pad * 2, cellSize - pad * 2);
+        ctx.strokeStyle = "#f5deb3";
+        ctx.strokeRect(sx + pad, sy + pad, cellSize - pad * 2, cellSize - pad * 2);
+      }
+    }
+
+    const farmZone = v.farm_zone_center;
+    if (farmZone) {
+      const sx = (farmZone.x - cameraX) * cellSize + cellSize / 2;
+      const sy = (farmZone.y - cameraY) * cellSize + cellSize / 2;
+
+      if (!(sx < -cellSize || sy < -cellSize || sx > canvas.width + cellSize || sy > canvas.height + cellSize)) {
+        ctx.beginPath();
+        ctx.arc(sx, sy, Math.max(2, cellSize * 0.08), 0, Math.PI * 2);
+        ctx.fillStyle = "#c7a94a";
+        ctx.fill();
+      }
+    }
+  });
+
+  // farms
+  (data.farms || []).forEach(f => {
+    const sx = (f.x - cameraX) * cellSize;
+    const sy = (f.y - cameraY) * cellSize;
+
+    if (sx < -cellSize || sy < -cellSize || sx > canvas.width || sy > canvas.height) {
+      return;
+    }
+
+    const pad = Math.floor(cellSize * 0.12);
+    ctx.fillStyle = farmColor(f.state);
+    ctx.fillRect(sx + pad, sy + pad, cellSize - pad * 2, cellSize - pad * 2);
+
+    ctx.strokeStyle = "#222";
+    ctx.strokeRect(sx + pad, sy + pad, cellSize - pad * 2, cellSize - pad * 2);
+  });
+
+  // village centers
+  (data.villages || []).forEach(v => {
+    const sx = (v.center.x - cameraX) * cellSize + cellSize / 2;
+    const sy = (v.center.y - cameraY) * cellSize + cellSize / 2;
+
+    if (sx < -cellSize || sy < -cellSize || sx > canvas.width + cellSize || sy > canvas.height + cellSize) {
+      return;
+    }
+
+    ctx.beginPath();
+    ctx.arc(sx, sy, Math.max(4, cellSize * 0.15), 0, Math.PI * 2);
+    ctx.fillStyle = strategyColor(v.strategy);
+    ctx.fill();
+    ctx.strokeStyle = "#222";
+    ctx.stroke();
+  });
+
+  // agents
   (data.agents || []).forEach(a => {
     const sx = (a.x - cameraX) * cellSize;
     const sy = (a.y - cameraY) * cellSize;
@@ -267,6 +575,19 @@ async function update() {
     ctx.fillStyle = isPlayer ? "red" : "blue";
     ctx.fillRect(sx, sy, cellSize, cellSize);
 
+    if (a.role === "leader") {
+      ctx.beginPath();
+      ctx.arc(
+        sx + cellSize / 2,
+        sy + cellSize / 2,
+        Math.max(4, cellSize * 0.18),
+        0,
+        Math.PI * 2
+      );
+      ctx.fillStyle = "orange";
+      ctx.fill();
+    }
+
     ctx.strokeStyle = "black";
     ctx.lineWidth = 2;
     ctx.strokeRect(sx, sy, cellSize, cellSize);
@@ -274,6 +595,8 @@ async function update() {
   });
 
   const inv = playerData?.inventory || { food: 0, wood: 0, stone: 0 };
+  const villageHtml = renderVillageSummary(data);
+  const civHtml = renderCivilizationSummary(data);
 
   document.getElementById("stats").innerHTML = `
 <b>WORLD STATS</b>
@@ -284,10 +607,15 @@ avg_hunger: ${data.avg_hunger}
 food: ${data.food_count}
 wood: ${data.wood_count}
 stone: ${data.stone_count}
+farms: ${data.farms_count}
 houses: ${data.houses_count}
 villages: ${data.villages_count}
 leaders: ${data.leaders_count}
 llm_interactions: ${data.llm_interactions}
+
+camera: (${cameraX}, ${cameraY})
+zoom_cell: ${cellSize}
+follow_player: ${followPlayer ? "yes" : "no"}
 
 <b>PLAYER</b>
 id: ${playerId ? playerId.slice(0, 8) + "..." : "-"}
@@ -296,11 +624,112 @@ hunger: ${playerData ? playerData.hunger : "-"}
 goal: ${playerData ? playerData.goal : "-"}
 role: ${playerData ? playerData.role : "-"}
 village_id: ${playerData ? playerData.village_id : "-"}
+
 inventory: food=${inv.food ?? 0}, wood=${inv.wood ?? 0}, stone=${inv.stone ?? 0}
+
+${civHtml}
+
+${villageHtml}
   `.replaceAll("\n", "<br>");
 
   renderMinimap(data, cameraX, cameraY, viewW, viewH);
 }
+
+canvas.addEventListener("mousedown", (e) => {
+  if (!latestState) return;
+  isDragging = true;
+  followPlayer = false;
+  document.getElementById("followBtn").textContent = "Follow Player: OFF";
+  dragStartX = e.clientX;
+  dragStartY = e.clientY;
+  dragCameraStartX = cameraX;
+  dragCameraStartY = cameraY;
+});
+
+window.addEventListener("mouseup", () => {
+  isDragging = false;
+});
+
+window.addEventListener("mousemove", (e) => {
+  if (!isDragging || !latestState) return;
+
+  const dxPixels = e.clientX - dragStartX;
+  const dyPixels = e.clientY - dragStartY;
+
+  cameraX = dragCameraStartX - Math.round(dxPixels / cellSize);
+  cameraY = dragCameraStartY - Math.round(dyPixels / cellSize);
+
+  clampCamera(latestState);
+});
+
+canvas.addEventListener("wheel", (e) => {
+  if (!latestState) return;
+  e.preventDefault();
+
+  const oldCellSize = cellSize;
+
+  if (e.deltaY < 0) {
+    cellSize = Math.min(MAX_CELL_SIZE, cellSize + 4);
+  } else {
+    cellSize = Math.max(MIN_CELL_SIZE, cellSize - 4);
+  }
+
+  if (cellSize === oldCellSize) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const mouseX = e.clientX - rect.left;
+  const mouseY = e.clientY - rect.top;
+
+  const worldX = cameraX + mouseX / oldCellSize;
+  const worldY = cameraY + mouseY / oldCellSize;
+
+  cameraX = Math.floor(worldX - mouseX / cellSize);
+  cameraY = Math.floor(worldY - mouseY / cellSize);
+
+  followPlayer = false;
+  document.getElementById("followBtn").textContent = "Follow Player: OFF";
+  clampCamera(latestState);
+}, { passive: false });
+
+minimap.addEventListener("click", (e) => {
+  if (!latestState) return;
+
+  const rect = minimap.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+
+  const sx = minimap.width / latestState.width;
+  const sy = minimap.height / latestState.height;
+
+  const targetX = Math.floor(mx / sx);
+  const targetY = Math.floor(my / sy);
+
+  const viewW = Math.floor(canvas.width / cellSize);
+  const viewH = Math.floor(canvas.height / cellSize);
+
+  cameraX = targetX - Math.floor(viewW / 2);
+  cameraY = targetY - Math.floor(viewH / 2);
+
+  followPlayer = false;
+  document.getElementById("followBtn").textContent = "Follow Player: OFF";
+  clampCamera(latestState);
+});
+
+window.addEventListener("keydown", (e) => {
+  keys.add(e.key);
+
+  if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", " "].includes(e.key)) {
+    e.preventDefault();
+  }
+
+  if (e.key === "f" || e.key === "F") {
+    toggleFollowPlayer();
+  }
+});
+
+window.addEventListener("keyup", (e) => {
+  keys.delete(e.key);
+});
 
 setInterval(update, 200);
 </script>

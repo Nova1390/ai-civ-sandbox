@@ -35,23 +35,18 @@ class Agent:
             "wood": set(),
             "stone": set(),
             "villages": set(),
+            "farms": set(),
         }
     )
 
     repro_cooldown: int = 0
 
-    # stato LLM / goal alto livello
     goal: str = "survive"
     last_llm_tick: int = 0
     llm_pending: bool = False
 
-    # civ / villaggio
-    role: str = "npc"          # npc | leader | player
+    role: str = "npc"
     village_id: Optional[int] = None
-
-    # ---------------------------------------------------
-    # MEMORY
-    # ---------------------------------------------------
 
     def update_memory(self, world: "World") -> None:
         vision = 6
@@ -75,6 +70,9 @@ class Agent:
                 if pos in world.stone:
                     self.memory["stone"].add(pos)
 
+                if pos in getattr(world, "farms", set()):
+                    self.memory["farms"].add(pos)
+
         for village in getattr(world, "villages", []):
             center = village.get("center")
             if not center:
@@ -90,16 +88,11 @@ class Agent:
                 self.memory["villages"].add((vx, vy))
 
     def cleanup_memory(self, world: "World") -> None:
-        self.memory["food"] = {
-            p for p in self.memory["food"] if p in world.food
-        }
-
-        self.memory["wood"] = {
-            p for p in self.memory["wood"] if p in world.wood
-        }
-
-        self.memory["stone"] = {
-            p for p in self.memory["stone"] if p in world.stone
+        self.memory["food"] = {p for p in self.memory["food"] if p in world.food}
+        self.memory["wood"] = {p for p in self.memory["wood"] if p in world.wood}
+        self.memory["stone"] = {p for p in self.memory["stone"] if p in world.stone}
+        self.memory["farms"] = {
+            p for p in self.memory["farms"] if p in getattr(world, "farms", set())
         }
 
         valid_village_centers = set()
@@ -112,10 +105,6 @@ class Agent:
         self.memory["villages"] = {
             p for p in self.memory["villages"] if p in valid_village_centers
         }
-
-    # ---------------------------------------------------
-    # BRAIN
-    # ---------------------------------------------------
 
     def run_brain(self, world: "World") -> Tuple[str, ...]:
         if self.brain is None:
@@ -131,21 +120,26 @@ class Agent:
 
         return ("wait",)
 
-    # ---------------------------------------------------
-    # FOOD
-    # ---------------------------------------------------
+    def eat_if_needed(self, world: "World") -> None:
+        if self.hunger >= 50:
+            return
 
-    def eat_if_needed(self) -> None:
-        if self.inventory.get("food", 0) > 0 and self.hunger < 50:
+        village = world.get_village_by_id(self.village_id)
+
+        if village is not None:
+            storage = village.get("storage", {})
+            if storage.get("food", 0) > 0:
+                storage["food"] -= 1
+                self.hunger += FOOD_EAT_GAIN
+                if self.hunger > 100:
+                    self.hunger = 100
+                return
+
+        if self.inventory.get("food", 0) > 0:
             self.inventory["food"] -= 1
             self.hunger += FOOD_EAT_GAIN
-
             if self.hunger > 100:
                 self.hunger = 100
-
-    # ---------------------------------------------------
-    # REPRODUCTION
-    # ---------------------------------------------------
 
     def try_reproduce(self, world: "World") -> None:
         if self.is_player:
@@ -190,10 +184,6 @@ class Agent:
 
         self.repro_cooldown = 80
 
-    # ---------------------------------------------------
-    # UPDATE
-    # ---------------------------------------------------
-
     def update(self, world: "World") -> None:
         if not self.alive:
             return
@@ -202,12 +192,11 @@ class Agent:
         self.cleanup_memory(world)
 
         self.hunger -= 1
-
         if self.hunger <= 0:
             self.alive = False
             return
 
-        self.eat_if_needed()
+        self.eat_if_needed(world)
 
         action = self.run_brain(world)
 
@@ -221,10 +210,15 @@ class Agent:
             if world.is_walkable(nx, ny) and not world.is_occupied(nx, ny):
                 self.x = nx
                 self.y = ny
+                world.record_road_step(self.x, self.y)
 
         world.autopickup(self)
         world.gather_resource(self)
-        world.try_build_house(self)
 
-        self.eat_if_needed()
+        world.try_build_house(self)
+        world.try_build_storage(self)
+        world.try_build_farm(self)
+        world.work_farm(self)
+
+        self.eat_if_needed(world)
         self.try_reproduce(world)
