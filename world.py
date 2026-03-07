@@ -18,14 +18,19 @@ from config import (
     MAX_STONE,
     FOOD_EAT_GAIN,
     MAX_AGENTS,
+    HOUSE_WOOD_COST,
+    HOUSE_STONE_COST,
 )
 
 from agent import Agent
 from brain import FoodBrain
+from worldgen.generator import generate_world
 import systems.building_system as building_system
 import systems.village_system as village_system
 import systems.farming_system as farming_system
 import systems.road_system as road_system
+import systems.role_system as role_system
+import systems.village_ai_system as village_ai_system
 
 Coord = Tuple[int, int]
 
@@ -34,6 +39,7 @@ MAX_HOUSES_PER_VILLAGE = 8
 MAX_NEW_VILLAGE_SEEDS = 2
 MIN_HOUSES_FOR_VILLAGE = 3
 MIN_HOUSES_FOR_LEADER = 3
+INITIAL_FOUNDER_QUOTA = 8
 
 
 class World:
@@ -43,6 +49,8 @@ class World:
 
         self.tick = 0
         self.llm_interactions = 0
+        self.llm_calls_this_tick = 0
+        self.max_llm_calls_per_tick = 1
 
         self.tiles: List[List[str]] = self._generate_tiles()
 
@@ -66,6 +74,9 @@ class World:
         self.MAX_NEW_VILLAGE_SEEDS = MAX_NEW_VILLAGE_SEEDS
         self.MIN_HOUSES_FOR_VILLAGE = MIN_HOUSES_FOR_VILLAGE
         self.MIN_HOUSES_FOR_LEADER = MIN_HOUSES_FOR_LEADER
+        self.INITIAL_FOUNDER_QUOTA = INITIAL_FOUNDER_QUOTA
+        self.founders_assigned = 0
+        self.founding_hub: Optional[Coord] = None
 
         self.MAX_FOOD = MAX_FOOD
         self.MAX_WOOD = MAX_WOOD
@@ -84,6 +95,8 @@ class World:
                     self.add_agent(Agent(x, y, brain, False, None))
 
         self.detect_villages()
+        self.update_village_ai()
+        self.assign_village_roles()
 
     def record_llm_interaction(self) -> None:
         self.llm_interactions += 1
@@ -100,27 +113,14 @@ class World:
     def record_road_step(self, x: int, y: int) -> None:
         road_system.record_agent_step(self, x, y)
 
+    def update_village_ai(self) -> None:
+        village_ai_system.update_village_ai(self)
+
+    def assign_village_roles(self) -> None:
+        role_system.assign_village_roles(self)
+
     def _generate_tiles(self) -> List[List[str]]:
-        tiles: List[List[str]] = []
-
-        for _y in range(self.height):
-            row: List[str] = []
-
-            for _x in range(self.width):
-                r = random.random()
-
-                if r < 0.08:
-                    row.append("W")
-                elif r < 0.18:
-                    row.append("M")
-                elif r < 0.40:
-                    row.append("F")
-                else:
-                    row.append("G")
-
-            tiles.append(row)
-
-        return tiles
+        return generate_world(self.width, self.height)
 
     def is_walkable(self, x: int, y: int) -> bool:
         if x < 0 or y < 0 or x >= self.width or y >= self.height:
@@ -134,6 +134,23 @@ class World:
         return False
 
     def add_agent(self, agent: Agent):
+        if (
+            not agent.is_player
+            and getattr(agent, "village_id", None) is None
+            and not getattr(agent, "founder", False)
+            and self.founders_assigned < self.INITIAL_FOUNDER_QUOTA
+            and self.tick < 300
+            and len(self.structures) < self.MIN_HOUSES_FOR_VILLAGE
+        ):
+            agent.founder = True
+            self.founders_assigned += 1
+            if self.founding_hub is None:
+                self.founding_hub = (agent.x, agent.y)
+            agent.task_target = self.founding_hub
+            # Minimal starter kit so founders can reliably place early houses.
+            agent.inventory["wood"] = max(agent.inventory.get("wood", 0), HOUSE_WOOD_COST)
+            agent.inventory["stone"] = max(agent.inventory.get("stone", 0), HOUSE_STONE_COST)
+
         self.agents.append(agent)
 
     def find_random_free(self) -> Optional[Coord]:
@@ -160,39 +177,103 @@ class World:
         return None
 
     def _spawn_initial_food(self, n: int):
-        for _ in range(n):
+        added = 0
+
+        # preferisci pianure vicino all'acqua
+        for _ in range(n * 4):
+            if added >= n:
+                break
+
+            x = random.randint(0, self.width - 1)
+            y = random.randint(0, self.height - 1)
+
+            if self.tiles[y][x] != "G":
+                continue
+
+            near_water = False
+            for dx in (-2, -1, 0, 1, 2):
+                for dy in (-2, -1, 0, 1, 2):
+                    nx = x + dx
+                    ny = y + dy
+                    if 0 <= nx < self.width and 0 <= ny < self.height:
+                        if self.tiles[ny][nx] == "W":
+                            near_water = True
+                            break
+                if near_water:
+                    break
+
+            if near_water and (x, y) not in self.food:
+                self.food.add((x, y))
+                added += 1
+
+        # fallback per riempire il resto
+        while added < n:
             pos = self.find_random_free()
-            if pos:
+            if pos and pos not in self.food:
                 self.food.add(pos)
+                added += 1
 
     def _spawn_initial_wood(self, n: int):
+        added = 0
         for _ in range(n):
-            for _ in range(50):
+            for _ in range(120):
                 x = random.randint(0, self.width - 1)
                 y = random.randint(0, self.height - 1)
                 if self.tiles[y][x] == "F" and (x, y) not in self.wood:
                     self.wood.add((x, y))
+                    added += 1
                     break
 
+        # fallback leggero se il worldgen ha poche foreste accessibili
+        while added < n:
+            pos = self.find_random_free()
+            if pos and pos not in self.wood:
+                x, y = pos
+                if self.tiles[y][x] != "W":
+                    self.wood.add(pos)
+                    added += 1
+
     def _spawn_initial_stone(self, n: int):
+        added = 0
         for _ in range(n):
-            for _ in range(50):
+            for _ in range(120):
                 x = random.randint(0, self.width - 1)
                 y = random.randint(0, self.height - 1)
                 if self.tiles[y][x] == "M" and (x, y) not in self.stone:
                     self.stone.add((x, y))
+                    added += 1
                     break
+
+        # fallback leggero se ci sono poche montagne accessibili
+        while added < n:
+            pos = self.find_random_free()
+            if pos and pos not in self.stone:
+                x, y = pos
+                if self.tiles[y][x] != "W":
+                    self.stone.add(pos)
+                    added += 1
 
     def respawn_resources(self):
         if len(self.food) < MAX_FOOD:
             for _ in range(FOOD_RESPAWN_PER_TICK):
-                pos = self.find_random_free()
-                if pos:
-                    self.food.add(pos)
+                # preferisci ancora pianure libere
+                placed = False
+                for _ in range(40):
+                    x = random.randint(0, self.width - 1)
+                    y = random.randint(0, self.height - 1)
+                    if self.tiles[y][x] == "G" and (x, y) not in self.food and not self.is_occupied(x, y):
+                        self.food.add((x, y))
+                        placed = True
+                        break
+
+                if not placed:
+                    pos = self.find_random_free()
+                    if pos:
+                        self.food.add(pos)
 
         if len(self.wood) < MAX_WOOD:
             for _ in range(WOOD_RESPAWN_PER_TICK):
-                for _ in range(50):
+                for _ in range(80):
                     x = random.randint(0, self.width - 1)
                     y = random.randint(0, self.height - 1)
                     if self.tiles[y][x] == "F":
@@ -201,7 +282,7 @@ class World:
 
         if len(self.stone) < MAX_STONE:
             for _ in range(STONE_RESPAWN_PER_TICK):
-                for _ in range(50):
+                for _ in range(80):
                     x = random.randint(0, self.width - 1)
                     y = random.randint(0, self.height - 1)
                     if self.tiles[y][x] == "M":
@@ -264,6 +345,9 @@ class World:
     def work_farm(self, agent: Agent):
         return farming_system.work_farm(self, agent)
 
+    def haul_harvest(self, agent: Agent):
+        return farming_system.haul_harvest(self, agent)
+
     def detect_villages(self):
         village_system.detect_villages(self)
 
@@ -275,6 +359,7 @@ class World:
 
     def update(self):
         self.tick += 1
+        self.llm_calls_this_tick = 0
 
         self.respawn_resources()
         farming_system.update_farms(self)
@@ -299,3 +384,5 @@ class World:
             self.agents = [a for a in self.agents if a.alive]
 
         self.detect_villages()
+        self.update_village_ai()
+        self.assign_village_roles()

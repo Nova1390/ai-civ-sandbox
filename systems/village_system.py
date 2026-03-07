@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
 
 if TYPE_CHECKING:
@@ -17,6 +18,10 @@ VILLAGE_COLORS = [
     "#7a4b2f",
     "#915c3a",
 ]
+
+TEMPERAMENTS = ("cautious", "balanced", "ambitious")
+FOCUSES = ("food", "housing", "logistics", "expansion")
+STYLES = ("conservative", "adaptive", "opportunistic")
 
 
 def get_village_by_id(world: "World", village_id: Optional[int]) -> Optional[Dict]:
@@ -195,6 +200,8 @@ def detect_villages(world: "World") -> None:
                     "x": cx + 2,
                     "y": cy + 2,
                 },
+                "priority_history": previous["priority_history"] if previous and "priority_history" in previous else [],
+                "leader_profile": previous["leader_profile"] if previous and "leader_profile" in previous else None,
             }
         )
         village_id += 1
@@ -205,6 +212,12 @@ def detect_villages(world: "World") -> None:
 
 
 def assign_village_leaders(world: "World") -> None:
+    prev_membership = {id(a): getattr(a, "village_id", None) for a in world.agents if a.alive}
+    previous_leaders = {
+        id(a): a for a in world.agents
+        if a.alive and not a.is_player and getattr(a, "role", "npc") == "leader"
+    }
+
     for a in world.agents:
         if not a.alive:
             continue
@@ -221,6 +234,9 @@ def assign_village_leaders(world: "World") -> None:
             (tile["x"], tile["y"])
             for tile in village.get("tiles", [])
         }
+        center = village.get("center", {})
+        cx = center.get("x", 0)
+        cy = center.get("y", 0)
 
         nearby_agents = []
 
@@ -235,26 +251,61 @@ def assign_village_leaders(world: "World") -> None:
                     is_member = True
                     break
 
+            # include agents working around farm/logistics zones near village center
+            if not is_member and abs(a.x - cx) <= 10 and abs(a.y - cy) <= 10:
+                is_member = True
+
             if is_member:
                 a.village_id = village["id"]
                 nearby_agents.append(a)
 
-        if (
-            village["houses"] < world.MIN_HOUSES_FOR_LEADER
-            or village["population"] < 2
-            or not nearby_agents
-        ):
-            village["leader_id"] = None
-            continue
+        village["population"] = max(village.get("population", 0), len(nearby_agents))
 
-        existing_leader = None
+        # stable fallback: populous villages should always keep/get one leader
+        if not nearby_agents and village["population"] >= 3:
+            cx = village["center"]["x"]
+            cy = village["center"]["y"]
+            fallback_candidates = [
+                a for a in world.agents
+                if a.alive
+                and not a.is_player
+                and abs(a.x - cx) <= 10
+                and abs(a.y - cy) <= 10
+            ]
+            if fallback_candidates:
+                chosen = max(
+                    fallback_candidates,
+                    key=lambda a: (
+                        a.hunger,
+                        a.inventory.get("food", 0)
+                        + a.inventory.get("wood", 0)
+                        + a.inventory.get("stone", 0),
+                    ),
+                )
+                chosen.village_id = village["id"]
+                nearby_agents.append(chosen)
+
         previous_leader_id = village.get("leader_id")
+        existing_leader = None
 
         if previous_leader_id is not None:
-            for a in nearby_agents:
-                if id(a) == previous_leader_id and a.alive:
-                    existing_leader = a
-                    break
+            candidate = previous_leaders.get(previous_leader_id)
+            if candidate is not None and candidate.alive:
+                # Keep leader persistent if alive and still close to village sphere.
+                if (
+                    prev_membership.get(id(candidate)) == village["id"]
+                    or (abs(candidate.x - cx) <= 18 and abs(candidate.y - cy) <= 18)
+                ):
+                    candidate.village_id = village["id"]
+                    existing_leader = candidate
+                    if candidate not in nearby_agents:
+                        nearby_agents.append(candidate)
+
+        active_village = village.get("population", 0) >= 3
+
+        if existing_leader is None and (not active_village or not nearby_agents):
+            village["leader_id"] = None
+            continue
 
         if existing_leader is not None:
             leader = existing_leader
@@ -272,6 +323,60 @@ def assign_village_leaders(world: "World") -> None:
         leader.role = "leader"
         leader.village_id = village["id"]
         village["leader_id"] = id(leader)
+        _ensure_leader_traits(leader, village)
+
+    # final safety net: each active village gets one leader if possible
+    for village in world.villages:
+        if village.get("leader_id") is not None:
+            continue
+        if village.get("population", 0) < 3:
+            continue
+        cx = village["center"]["x"]
+        cy = village["center"]["y"]
+        candidates = [
+            a for a in world.agents
+            if a.alive
+            and not a.is_player
+            and getattr(a, "role", "npc") != "leader"
+            and (
+                prev_membership.get(id(a)) == village["id"]
+                or (abs(a.x - cx) <= 18 and abs(a.y - cy) <= 18)
+            )
+        ]
+        if not candidates:
+            # last-resort continuity: pull the best alive non-player into leadership
+            candidates = [
+                a for a in world.agents
+                if a.alive and not a.is_player and getattr(a, "role", "npc") != "leader"
+            ]
+        if not candidates:
+            continue
+        leader = max(
+            candidates,
+            key=lambda a: (
+                a.hunger,
+                a.inventory.get("food", 0)
+                + a.inventory.get("wood", 0)
+                + a.inventory.get("stone", 0),
+            ),
+        )
+        leader.role = "leader"
+        leader.village_id = village["id"]
+        village["leader_id"] = id(leader)
+        _ensure_leader_traits(leader, village)
+
+
+def _ensure_leader_traits(agent, village: Dict) -> None:
+    traits = getattr(agent, "leader_traits", None)
+    if not traits:
+        traits = {
+            "temperament": random.choice(TEMPERAMENTS),
+            "focus": random.choice(FOCUSES),
+            "style": random.choice(STYLES),
+        }
+        agent.leader_traits = traits
+
+    village["leader_profile"] = traits
 
 
 def update_village_politics(world: "World") -> None:

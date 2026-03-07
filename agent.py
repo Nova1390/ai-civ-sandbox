@@ -11,6 +11,8 @@ from config import (
     REPRO_PROB,
     REPRO_COST,
     MAX_AGENTS,
+    HOUSE_WOOD_COST,
+    HOUSE_STONE_COST,
 )
 
 
@@ -47,6 +49,59 @@ class Agent:
 
     role: str = "npc"
     village_id: Optional[int] = None
+    founder: bool = False
+
+    task: str = "idle"
+    task_target: Optional[Tuple[int, int]] = None
+    home_pos: Optional[Tuple[int, int]] = None
+    work_pos: Optional[Tuple[int, int]] = None
+    last_pos: Optional[Tuple[int, int]] = None
+    stuck_ticks: int = 0
+    leader_traits: Optional[Dict[str, str]] = None
+
+    def _near_storage(self, village: Optional[Dict]) -> bool:
+        if not village:
+            return False
+        sp = village.get("storage_pos")
+        if not sp:
+            return False
+        return abs(self.x - sp["x"]) <= 1 and abs(self.y - sp["y"]) <= 1
+
+    def _deposit_inventory_to_storage(self, world: "World") -> bool:
+        village = world.get_village_by_id(self.village_id)
+        if village is None or not self._near_storage(village):
+            return False
+
+        storage = village.get("storage", {})
+        moved = False
+        for key in ("food", "wood", "stone"):
+            qty = self.inventory.get(key, 0)
+            if qty > 0:
+                storage[key] = storage.get(key, 0) + qty
+                self.inventory[key] = 0
+                moved = True
+        return moved
+
+    def _withdraw_build_materials(self, world: "World", wood_need: int, stone_need: int) -> bool:
+        village = world.get_village_by_id(self.village_id)
+        if village is None or not self._near_storage(village):
+            return False
+
+        storage = village.get("storage", {})
+        missing_wood = max(0, wood_need - self.inventory.get("wood", 0))
+        missing_stone = max(0, stone_need - self.inventory.get("stone", 0))
+
+        take_wood = min(storage.get("wood", 0), missing_wood)
+        take_stone = min(storage.get("stone", 0), missing_stone)
+
+        if take_wood <= 0 and take_stone <= 0:
+            return False
+
+        storage["wood"] = storage.get("wood", 0) - take_wood
+        storage["stone"] = storage.get("stone", 0) - take_stone
+        self.inventory["wood"] = self.inventory.get("wood", 0) + take_wood
+        self.inventory["stone"] = self.inventory.get("stone", 0) + take_stone
+        return True
 
     def update_memory(self, world: "World") -> None:
         vision = 6
@@ -106,6 +161,63 @@ class Agent:
             p for p in self.memory["villages"] if p in valid_village_centers
         }
 
+    def update_role_task(self, world: "World") -> None:
+        village = world.get_village_by_id(self.village_id)
+
+        if self.is_player:
+            self.task = "player_controlled"
+            return
+
+        role = getattr(self, "role", "npc")
+
+        if role == "leader":
+            self.task = "manage_village"
+            return
+
+        # bootstrap: prima che esista un villaggio, gli NPC fondano i primi nuclei
+        if village is None:
+            if (
+                self.inventory.get("wood", 0) >= HOUSE_WOOD_COST
+                and self.inventory.get("stone", 0) >= HOUSE_STONE_COST
+            ):
+                self.task = "bootstrap_build_house"
+            else:
+                self.task = "bootstrap_gather"
+            if getattr(self, "founder", False):
+                self.task_target = self.task_target or (self.x, self.y)
+            return
+
+        priority = village.get("priority", "stabilize")
+        needs = village.get("needs", {})
+
+        if role == "farmer":
+            self.task = "farm_cycle"
+            return
+
+        if role == "builder":
+            if priority == "build_storage" or needs.get("need_storage"):
+                self.task = "build_storage"
+            elif priority == "build_housing" or needs.get("need_housing"):
+                self.task = "build_house"
+            elif priority == "improve_logistics" or needs.get("need_roads"):
+                self.task = "build_road"
+            else:
+                self.task = "gather_materials"
+            return
+
+        if role == "hauler":
+            if priority == "secure_food":
+                self.task = "food_logistics"
+            else:
+                self.task = "village_logistics"
+            return
+
+        if role == "forager":
+            self.task = "gather_food_wild"
+            return
+
+        self.task = "survive"
+
     def run_brain(self, world: "World") -> Tuple[str, ...]:
         if self.brain is None:
             return ("wait",)
@@ -120,11 +232,34 @@ class Agent:
 
         return ("wait",)
 
-    def eat_if_needed(self, world: "World") -> None:
-        if self.hunger >= 50:
-            return
-
+    def eat_if_needed(self, world: "World") -> bool:
         village = world.get_village_by_id(self.village_id)
+        trigger = 50
+        ate = False
+        preserve_inventory_food = False
+
+        if village is not None:
+            storage = village.get("storage", {})
+            pop = max(1, village.get("population", 1))
+            food_stock = storage.get("food", 0)
+            buffer_target = max(4, pop * 4)
+            if food_stock > 0:
+                # Village food should protect members earlier, reducing avoidable starvation.
+                if food_stock >= pop:
+                    trigger = 70
+                else:
+                    trigger = 62
+            if (
+                food_stock < buffer_target
+                and self.inventory.get("food", 0) > 0
+                and getattr(self, "role", "npc") in ("hauler", "farmer")
+                and not self._near_storage(village)
+            ):
+                # Keep carried harvest for deposit when village stock buffer is low.
+                preserve_inventory_food = True
+
+        if self.hunger >= trigger:
+            return ate
 
         if village is not None:
             storage = village.get("storage", {})
@@ -133,16 +268,23 @@ class Agent:
                 self.hunger += FOOD_EAT_GAIN
                 if self.hunger > 100:
                     self.hunger = 100
-                return
+                return True
 
-        if self.inventory.get("food", 0) > 0:
+        if self.inventory.get("food", 0) > 0 and (not preserve_inventory_food or self.hunger <= 15):
             self.inventory["food"] -= 1
             self.hunger += FOOD_EAT_GAIN
             if self.hunger > 100:
                 self.hunger = 100
+            ate = True
+
+        return ate
 
     def try_reproduce(self, world: "World") -> None:
         if self.is_player:
+            return
+
+        # Hard gate: no uncontrolled growth before first real settlements.
+        if getattr(self, "village_id", None) is None or not getattr(world, "villages", []):
             return
 
         if len(world.agents) >= int(MAX_AGENTS * 0.60):
@@ -152,10 +294,23 @@ class Agent:
             self.repro_cooldown -= 1
             return
 
-        if self.hunger < REPRO_MIN_HUNGER:
+        village = world.get_village_by_id(self.village_id)
+        storage_food = 0
+        village_pop = 0
+        if village is not None:
+            storage_food = village.get("storage", {}).get("food", 0)
+            village_pop = village.get("population", 0)
+
+        repro_min_hunger = REPRO_MIN_HUNGER
+        repro_prob = REPRO_PROB
+        if village is not None and storage_food >= max(4, village_pop // 3):
+            repro_min_hunger = max(75, REPRO_MIN_HUNGER - 10)
+            repro_prob = min(0.03, REPRO_PROB * 1.8)
+
+        if self.hunger < repro_min_hunger:
             return
 
-        if random.random() > REPRO_PROB:
+        if random.random() > repro_prob:
             return
 
         pos = world.find_free_adjacent(self.x, self.y)
@@ -175,6 +330,7 @@ class Agent:
         baby.hunger = float(AGENT_START_HUNGER)
         baby.role = "npc"
         baby.village_id = self.village_id
+        baby.task = "idle"
 
         world.add_agent(baby)
 
@@ -190,15 +346,18 @@ class Agent:
 
         self.update_memory(world)
         self.cleanup_memory(world)
+        self.update_role_task(world)
+
+        # Eat before decay so stocked villages actually prevent avoidable deaths.
+        ate_before_action = self.eat_if_needed(world)
 
         self.hunger -= 1
         if self.hunger <= 0:
             self.alive = False
             return
 
-        self.eat_if_needed(world)
-
         action = self.run_brain(world)
+        moved = False
 
         if action and action[0] == "move":
             dx = int(action[1])
@@ -210,15 +369,130 @@ class Agent:
             if world.is_walkable(nx, ny) and not world.is_occupied(nx, ny):
                 self.x = nx
                 self.y = ny
-                world.record_road_step(self.x, self.y)
+                moved = True
+
+                # le strade emergono solo da insediamenti veri, non dal caos iniziale
+                if getattr(self, "village_id", None) is not None:
+                    world.record_road_step(self.x, self.y)
+
+        if self.last_pos is None:
+            self.last_pos = (self.x, self.y)
+
+        if moved:
+            self.last_pos = (self.x, self.y)
+            self.stuck_ticks = 0
+        else:
+            if self.last_pos == (self.x, self.y):
+                self.stuck_ticks += 1
+            else:
+                self.last_pos = (self.x, self.y)
+                self.stuck_ticks = 0
+
+            if self.stuck_ticks >= 3:
+                if self._break_stall(world):
+                    self.stuck_ticks = 0
+                    self.last_pos = (self.x, self.y)
 
         world.autopickup(self)
         world.gather_resource(self)
 
-        world.try_build_house(self)
-        world.try_build_storage(self)
-        world.try_build_farm(self)
-        world.work_farm(self)
+        # azioni guidate da ruolo/task
+        if self.task == "farm_cycle":
+            world.try_build_farm(self)
+            world.work_farm(self)
 
-        self.eat_if_needed(world)
+        elif self.task == "build_storage":
+            self._withdraw_build_materials(world, wood_need=4, stone_need=2)
+            built = world.try_build_storage(self)
+            if not built:
+                village = world.get_village_by_id(self.village_id)
+                if village is not None:
+                    storage = village.get("storage", {})
+                    if storage.get("wood", 0) < 4 or storage.get("stone", 0) < 2:
+                        self.task = "gather_materials"
+                    else:
+                        self.task = "build_storage"
+
+        elif self.task == "build_house":
+            self._withdraw_build_materials(world, wood_need=HOUSE_WOOD_COST, stone_need=HOUSE_STONE_COST)
+            world.try_build_house(self)
+
+        elif self.task == "build_road":
+            # per ora la strada emerge dal movimento
+            pass
+
+        elif self.task == "gather_materials":
+            # builder in attesa di materiali
+            pass
+
+        elif self.task == "food_logistics":
+            if not self._deposit_inventory_to_storage(world):
+                world.haul_harvest(self)
+                world.work_farm(self)
+
+        elif self.task == "village_logistics":
+            if not self._deposit_inventory_to_storage(world):
+                world.haul_harvest(self)
+
+        elif self.task == "gather_food_wild":
+            # niente build casuali
+            pass
+
+        elif self.task == "bootstrap_build_house":
+            built = world.try_build_house(self)
+            if not built:
+                # Keep founding behavior coherent: if still funded, keep trying near settlements.
+                if (
+                    self.inventory.get("wood", 0) >= HOUSE_WOOD_COST
+                    and self.inventory.get("stone", 0) >= HOUSE_STONE_COST
+                ):
+                    if world.structures:
+                        self.task_target = min(
+                            world.structures,
+                            key=lambda p: abs(p[0] - self.x) + abs(p[1] - self.y),
+                        )
+                    self.task = "bootstrap_build_house"
+                else:
+                    self.task = "bootstrap_gather"
+
+        elif self.task == "bootstrap_gather":
+            # niente build casuali, raccoglie e si muove col brain
+            pass
+
+        elif self.task == "survive":
+            pass
+
+        if not ate_before_action:
+            self.eat_if_needed(world)
         self.try_reproduce(world)
+
+    def _break_stall(self, world: "World") -> bool:
+        target = self.task_target
+        dirs = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+        random.shuffle(dirs)
+        options = []
+
+        for dx, dy in dirs:
+            nx = self.x + dx
+            ny = self.y + dy
+            if not world.is_walkable(nx, ny) or world.is_occupied(nx, ny):
+                continue
+
+            if target is not None:
+                d = abs(target[0] - nx) + abs(target[1] - ny)
+                options.append((d, dx, dy))
+            else:
+                options.append((0, dx, dy))
+
+        if not options:
+            return False
+
+        options.sort(key=lambda t: t[0])
+        _, dx, dy = options[0]
+        self.x += dx
+        self.y += dy
+
+        if getattr(self, "village_id", None) is not None:
+            world.record_road_step(self.x, self.y)
+
+        return True

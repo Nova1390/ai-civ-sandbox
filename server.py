@@ -23,7 +23,10 @@ player_brain = LLMBrain(planner=planner, fallback=npc_brain, think_every_ticks=6
 leader_brain = LLMBrain(planner=planner, fallback=npc_brain, think_every_ticks=240)
 
 SPRITES_DIR = "sprites"
+FRONTEND_DIR = "frontend"
+
 app.mount("/sprites", StaticFiles(directory=SPRITES_DIR), name="sprites")
+app.mount("/frontend", StaticFiles(directory=FRONTEND_DIR), name="frontend")
 
 
 def refresh_agent_brains():
@@ -66,6 +69,11 @@ async def startup():
 
 @app.get("/")
 def root():
+    return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
+
+
+@app.get("/client")
+def old_client():
     return FileResponse("client.html")
 
 
@@ -97,7 +105,7 @@ def get_state():
     players = [a for a in alive_agents if a.is_player]
     npcs = [a for a in alive_agents if not a.is_player]
 
-    avg_hunger = 0
+    avg_hunger = 0.0
     if alive_agents:
         avg_hunger = sum(a.hunger for a in alive_agents) / len(alive_agents)
 
@@ -113,6 +121,20 @@ def get_state():
             }
         )
 
+    villages = []
+    for v in world.villages:
+        villages.append(
+            {
+                **v,
+                "storage": v.get("storage", {"food": 0, "wood": 0, "stone": 0}),
+                "storage_pos": v.get("storage_pos"),
+                "farm_zone_center": v.get("farm_zone_center"),
+                "needs": v.get("needs", {}),
+                "priority": v.get("priority", "stabilize"),
+                "metrics": v.get("metrics", {}),
+            }
+        )
+
     return {
         "tick": world.tick,
         "width": world.width,
@@ -124,7 +146,9 @@ def get_state():
         "farms": farms,
         "farms_count": len(world.farm_plots),
         "structures": [{"x": x, "y": y} for x, y in world.structures],
-        "villages": world.villages,
+        "roads": [{"x": x, "y": y} for x, y in world.roads],
+        "storage_buildings": [{"x": x, "y": y} for x, y in world.storage_buildings],
+        "villages": villages,
         "civ_stats": world.get_civilization_stats(),
         "agents": [
             {
@@ -134,6 +158,7 @@ def get_state():
                 "player_id": a.player_id,
                 "role": getattr(a, "role", "npc"),
                 "village_id": getattr(a, "village_id", None),
+                "task": getattr(a, "task", "idle"),
             }
             for a in alive_agents
         ],
@@ -148,8 +173,6 @@ def get_state():
         "villages_count": len(world.villages),
         "leaders_count": world.count_leaders(),
         "llm_interactions": world.llm_interactions,
-        "roads": [{"x": x, "y": y} for x, y in world.roads],
-        "storage_buildings": [{"x": x, "y": y} for x, y in world.storage_buildings],
     }
 
 
@@ -184,6 +207,7 @@ def get_player(player_id: str):
                 "goal": getattr(p, "goal", "survive"),
                 "role": getattr(p, "role", "player"),
                 "village_id": getattr(p, "village_id", None),
+                "task": getattr(p, "task", "idle"),
                 "inventory": {
                     "food": inv.get("food", 0),
                     "wood": inv.get("wood", 0),

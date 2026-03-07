@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 from typing import Tuple
 
 Coord = Tuple[int, int]
@@ -7,6 +8,14 @@ Coord = Tuple[int, int]
 PREPARE_WOOD_COST = 1
 PLANT_GROW_TICKS = 35
 HARVEST_YIELD = 1
+HARVEST_BONUS_CHANCE = 0.3
+
+
+def _get_build_wallet(world, agent):
+    village = world.get_village_by_id(getattr(agent, "village_id", None))
+    if village is not None:
+        return village.get("storage", {})
+    return agent.inventory
 
 
 def update_farms(world) -> None:
@@ -35,7 +44,8 @@ def update_farms(world) -> None:
 
 
 def try_build_farm(world, agent) -> bool:
-    if agent.inventory.get("wood", 0) < PREPARE_WOOD_COST:
+    wallet = _get_build_wallet(world, agent)
+    if wallet.get("wood", 0) < PREPARE_WOOD_COST:
         return False
 
     village_id = getattr(agent, "village_id", None)
@@ -104,7 +114,7 @@ def try_build_farm(world, agent) -> bool:
         "owner_role": getattr(agent, "role", "npc"),
     }
 
-    agent.inventory["wood"] -= PREPARE_WOOD_COST
+    wallet["wood"] = wallet.get("wood", 0) - PREPARE_WOOD_COST
     return True
 
 
@@ -125,13 +135,39 @@ def work_farm(world, agent) -> bool:
         return True
 
     if state == "ripe":
+        harvest_amount = HARVEST_YIELD
+        if random.random() < HARVEST_BONUS_CHANCE:
+            harvest_amount += 1
         if village is not None:
-            village["storage"]["food"] = village["storage"].get("food", 0) + HARVEST_YIELD
+            village["storage"]["food"] = village["storage"].get("food", 0) + harvest_amount
         else:
-            agent.inventory["food"] = agent.inventory.get("food", 0) + HARVEST_YIELD
+            agent.inventory["food"] = agent.inventory.get("food", 0) + harvest_amount
 
         plot["state"] = "prepared"
         plot["growth"] = 0
         return True
 
     return False
+
+
+def haul_harvest(world, agent) -> bool:
+    """
+    Minimal logistics harvest:
+    hauler raccoglie dal campo maturo nel proprio inventario
+    invece di depositare direttamente nello storage villaggio.
+    """
+    pos = (agent.x, agent.y)
+    plot = world.farm_plots.get(pos)
+    if not plot:
+        return False
+
+    if plot.get("state") != "ripe":
+        return False
+
+    harvest_amount = HARVEST_YIELD
+    if random.random() < HARVEST_BONUS_CHANCE:
+        harvest_amount += 1
+    agent.inventory["food"] = agent.inventory.get("food", 0) + harvest_amount
+    plot["state"] = "prepared"
+    plot["growth"] = 0
+    return True

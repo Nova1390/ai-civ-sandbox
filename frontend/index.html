@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>AI Civilization Observer</title>
+<link rel="icon" href="data:,">
+<style>
+  body {
+    margin: 0;
+    padding: 16px;
+    background: #111;
+    color: white;
+    font-family: Arial, sans-serif;
+  }
+
+  h2 {
+    margin-top: 0;
+  }
+
+  canvas {
+    border: 1px solid #444;
+    image-rendering: pixelated;
+    background: #000;
+  }
+
+  .row {
+    display: flex;
+    gap: 16px;
+    align-items: flex-start;
+  }
+
+  .panel {
+    background: #1e1e1e;
+    border: 1px solid #3a3a3a;
+    padding: 10px;
+    margin-top: 10px;
+    width: 360px;
+  }
+
+  .mono {
+    font-family: ui-monospace, Menlo, Monaco, Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+  }
+
+  .legend div {
+    margin: 4px 0;
+    font-size: 13px;
+  }
+
+  .box {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    margin-right: 6px;
+    border: 1px solid #222;
+    vertical-align: middle;
+  }
+
+  button {
+    padding: 8px 10px;
+    margin-right: 6px;
+    margin-bottom: 6px;
+    border: 1px solid #555;
+    background: #2b2b2b;
+    color: white;
+    cursor: pointer;
+  }
+
+  button.active {
+    background: #4a6;
+    color: #111;
+    border-color: #7c9;
+  }
+  .toggle{
+cursor:pointer;
+padding:2px 4px;
+}
+
+.toggle:hover{
+background:#333;
+}
+</style>
+</head>
+<body>
+
+<h2>AI CIVILIZATION OBSERVER</h2>
+
+<div>
+  <button id="followBtn">Follow: ON</button>
+  <button id="roadsBtn" class="active">Roads</button>
+  <button id="farmsBtn" class="active">Farms</button>
+  <button id="villagesBtn" class="active">Villages</button>
+  <button id="heatBtn" class="active">Heat</button>
+</div>
+
+<div class="row">
+  <div>
+    <canvas id="world" width="720" height="720"></canvas>
+    <div id="stats" class="panel mono"></div>
+  </div>
+
+  <div>
+    <div class="panel">
+      <b>MINIMAP</b><br><br>
+      <canvas id="minimap" width="220" height="220"></canvas>
+    </div>
+
+    <div class="panel legend">
+<b>LEGEND (click to toggle)</b>
+
+<div style="margin-top:8px;"><b>Agents</b></div>
+<div><span class="box" style="background:red"></span> Player</div>
+<div><span class="box" style="background:blue"></span> NPC</div>
+<div><span class="box" style="background:orange"></span> Leader</div>
+
+<div style="margin-top:8px;"><b>Tiles</b></div>
+<div><span class="box" style="background:#6fcf6a"></span> Grass</div>
+<div><span class="box" style="background:#2f8f45"></span> Forest</div>
+<div><span class="box" style="background:#999"></span> Mountain</div>
+<div><span class="box" style="background:#4da6ff"></span> Water</div>
+
+<div style="margin-top:8px;"><b>Layers</b></div>
+
+<div class="toggle" data-layer="roads">
+<span class="box" style="background:#c2a27a"></span> Roads
+</div>
+
+<div class="toggle" data-layer="farms">
+<span class="box" style="background:#b38b5a"></span> Farms
+</div>
+
+<div class="toggle" data-layer="villages">
+<span class="box" style="background:gold"></span> Villages
+</div>
+
+<div class="toggle" data-layer="heat">
+<span class="box" style="background:rgba(255,80,0,0.5)"></span> Population heat
+</div>
+
+<div style="margin-top:8px;"><b>Buildings</b></div>
+<div><span class="box" style="background:#8b4513"></span> House</div>
+<div><span class="box" style="background:#5b3a29"></span> Storage</div>
+
+<div style="margin-top:8px;"><b>Controls</b></div>
+<div>Drag mouse = move camera</div>
+<div>Wheel = zoom</div>
+<div>WASD / Arrows = move camera</div>
+<div>Minimap click = jump camera</div>
+<div>F = follow player</div>
+<div>P = spawn player</div>
+</div>
+
+    <div id="inspect" class="panel mono"><b>INSPECT</b>\nClick village / agent (next step)</div>
+  </div>
+</div>
+
+<script src="/frontend/state.js"></script>
+<script src="/frontend/camera.js"></script>
+<script src="/frontend/layers.js"></script>
+<script src="/frontend/renderer.js"></script>
+<script src="/frontend/main.js"></script>
+
+</body>
+</html>

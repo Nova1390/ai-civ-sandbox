@@ -1,3 +1,27 @@
+# Python cache
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+
+# macOS
 .DS_Store
+
+# Environment files
+.env
+.venv/
+venv/
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# Node (se usi frontend)
+node_modules/
+
+# Build
+dist/
+build/

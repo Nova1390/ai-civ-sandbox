@@ -15,6 +15,83 @@ STORAGE_WOOD_COST = 4
 STORAGE_STONE_COST = 2
 
 
+def _find_nearest_storage_spot(world: "World", village: dict, origin: Coord) -> Optional[Coord]:
+    cx = village.get("center", {}).get("x", origin[0])
+    cy = village.get("center", {}).get("y", origin[1])
+
+    best: Optional[Coord] = None
+    best_score = 10**9
+
+    for radius in range(0, 7):
+        for dx in range(-radius, radius + 1):
+            for dy in range(-radius, radius + 1):
+                x = cx + dx
+                y = cy + dy
+                if abs(dx) + abs(dy) > radius:
+                    continue
+
+                if not can_build_at(world, x, y):
+                    continue
+
+                # Keep storage close to village center and reachable by current builder.
+                score = abs(x - cx) + abs(y - cy) + abs(x - origin[0]) + abs(y - origin[1])
+                if score < best_score:
+                    best_score = score
+                    best = (x, y)
+
+        if best is not None:
+            return best
+
+    return None
+
+
+def _get_build_wallet(world: "World", agent: "Agent"):
+    village = world.get_village_by_id(getattr(agent, "village_id", None))
+    if village is not None:
+        return village.get("storage", {})
+    return agent.inventory
+
+
+def _can_pay(world: "World", agent: "Agent", wood_cost: int, stone_cost: int) -> bool:
+    village = world.get_village_by_id(getattr(agent, "village_id", None))
+    if village is None:
+        wallet = _get_build_wallet(world, agent)
+        return wallet.get("wood", 0) >= wood_cost and wallet.get("stone", 0) >= stone_cost
+
+    inv = agent.inventory
+    storage = village.get("storage", {})
+    return (
+        inv.get("wood", 0) + storage.get("wood", 0) >= wood_cost
+        and inv.get("stone", 0) + storage.get("stone", 0) >= stone_cost
+    )
+
+
+def _pay(world: "World", agent: "Agent", wood_cost: int, stone_cost: int) -> None:
+    village = world.get_village_by_id(getattr(agent, "village_id", None))
+    if village is None:
+        wallet = _get_build_wallet(world, agent)
+        wallet["wood"] = wallet.get("wood", 0) - wood_cost
+        wallet["stone"] = wallet.get("stone", 0) - stone_cost
+        return
+
+    inv = agent.inventory
+    storage = village.get("storage", {})
+
+    wood_from_inv = min(inv.get("wood", 0), wood_cost)
+    stone_from_inv = min(inv.get("stone", 0), stone_cost)
+
+    inv["wood"] = inv.get("wood", 0) - wood_from_inv
+    inv["stone"] = inv.get("stone", 0) - stone_from_inv
+
+    remaining_wood = wood_cost - wood_from_inv
+    remaining_stone = stone_cost - stone_from_inv
+
+    if remaining_wood > 0:
+        storage["wood"] = storage.get("wood", 0) - remaining_wood
+    if remaining_stone > 0:
+        storage["stone"] = storage.get("stone", 0) - remaining_stone
+
+
 def building_score(world: "World", x: int, y: int) -> int:
     score = 0
 
@@ -68,14 +145,20 @@ def try_build_house(world: "World", agent: "Agent") -> bool:
     if len(world.structures) >= world.MAX_STRUCTURES:
         return False
 
-    if (
-        agent.inventory.get("wood", 0) < HOUSE_WOOD_COST
-        or agent.inventory.get("stone", 0) < HOUSE_STONE_COST
-    ):
+    if not _can_pay(world, agent, HOUSE_WOOD_COST, HOUSE_STONE_COST):
         return False
 
     best_pos: Optional[Coord] = None
     best_score = -10**9
+    bootstrap_mode = getattr(agent, "village_id", None) is None
+
+    anchor: Optional[Coord] = None
+    if bootstrap_mode and getattr(agent, "founder", False):
+        target = getattr(agent, "task_target", None)
+        if isinstance(target, tuple) and len(target) == 2:
+            anchor = target
+        elif getattr(world, "founding_hub", None) is not None:
+            anchor = world.founding_hub
 
     for dx in range(-3, 4):
         for dy in range(-3, 4):
@@ -86,6 +169,7 @@ def try_build_house(world: "World", agent: "Agent") -> bool:
                 continue
 
             nearby_houses = count_nearby_houses(world, x, y, radius=5)
+            connected_houses = count_nearby_houses(world, x, y, radius=4)
             nearby_population = count_nearby_population(world, x, y, radius=6)
 
             if nearby_houses >= world.MAX_HOUSES_PER_VILLAGE:
@@ -98,10 +182,21 @@ def try_build_house(world: "World", agent: "Agent") -> bool:
             if nearby_houses == 0 and len(world.structures) >= world.MAX_NEW_VILLAGE_SEEDS:
                 continue
 
+            # bootstrap hardening: after first seed, force compact growth so village detector can cluster.
+            if bootstrap_mode and len(world.structures) > 0 and connected_houses == 0:
+                continue
+
             score = building_score(world, x, y)
+            score += connected_houses * 8
 
             if nearby_houses == 0:
                 score -= 10
+
+            if anchor is not None:
+                d_anchor = abs(anchor[0] - x) + abs(anchor[1] - y)
+                if d_anchor > 8:
+                    continue
+                score += max(0, 36 - d_anchor * 4)
 
             if score > best_score:
                 best_score = score
@@ -112,8 +207,7 @@ def try_build_house(world: "World", agent: "Agent") -> bool:
 
     bx, by = best_pos
     world.structures.add((bx, by))
-    agent.inventory["wood"] -= HOUSE_WOOD_COST
-    agent.inventory["stone"] -= HOUSE_STONE_COST
+    _pay(world, agent, HOUSE_WOOD_COST, HOUSE_STONE_COST)
     return True
 
 
@@ -133,10 +227,14 @@ def try_build_storage(world: "World", agent: "Agent") -> bool:
     if (sx, sy) in getattr(world, "storage_buildings", set()):
         return False
 
-    if (
-        agent.inventory.get("wood", 0) < STORAGE_WOOD_COST
-        or agent.inventory.get("stone", 0) < STORAGE_STONE_COST
-    ):
+    if not can_build_at(world, sx, sy):
+        replacement = _find_nearest_storage_spot(world, village, (agent.x, agent.y))
+        if replacement is None:
+            return False
+        sx, sy = replacement
+        village["storage_pos"] = {"x": sx, "y": sy}
+
+    if not _can_pay(world, agent, STORAGE_WOOD_COST, STORAGE_STONE_COST):
         return False
 
     if abs(agent.x - sx) > 2 or abs(agent.y - sy) > 2:
@@ -146,6 +244,5 @@ def try_build_storage(world: "World", agent: "Agent") -> bool:
         return False
 
     world.storage_buildings.add((sx, sy))
-    agent.inventory["wood"] -= STORAGE_WOOD_COST
-    agent.inventory["stone"] -= STORAGE_STONE_COST
+    _pay(world, agent, STORAGE_WOOD_COST, STORAGE_STONE_COST)
     return True
