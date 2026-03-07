@@ -35,6 +35,54 @@ ALLOWED_PRIORITIES = {
 }
 
 
+def phase_allowed_priorities(village: Optional[dict]) -> Set[str]:
+    phase = (village or {}).get("phase", "survival")
+    mapping = {
+        "bootstrap": {"expand_farms", "build_housing"},
+        "survival": {"secure_food", "expand_farms"},
+        "stabilize": {"expand_farms", "build_housing", "improve_logistics", "stabilize"},
+        "growth": {"build_housing", "improve_logistics", "expand_farms", "stabilize"},
+        "expansion": {"improve_logistics", "build_housing", "stabilize", "expand_farms"},
+    }
+    return mapping.get(phase, ALLOWED_PRIORITIES)
+
+
+def clamp_priority_to_phase(village: Optional[dict], priority: str) -> str:
+    p = normalize_priority(priority or "") or "stabilize"
+    if p == "build_storage" and village is not None:
+        storage_exists = bool(village.get("metrics", {}).get("storage_exists", False))
+        if not storage_exists:
+            return "build_storage"
+    allowed = phase_allowed_priorities(village)
+    if p in allowed:
+        return p
+
+    phase = (village or {}).get("phase", "survival")
+    fallback_by_phase = {
+        "bootstrap": "expand_farms",
+        "survival": "secure_food",
+        "stabilize": "stabilize",
+        "growth": "build_housing",
+        "expansion": "improve_logistics",
+    }
+    fallback = fallback_by_phase.get(phase, "stabilize")
+    if fallback in allowed:
+        return fallback
+
+    ordered = (
+        "secure_food",
+        "build_storage",
+        "build_housing",
+        "expand_farms",
+        "improve_logistics",
+        "stabilize",
+    )
+    for candidate in ordered:
+        if candidate in allowed:
+            return candidate
+    return "stabilize"
+
+
 def normalize_goal(text: str) -> Optional[str]:
     t = (text or "").strip().lower()
 
@@ -164,6 +212,11 @@ def deterministic_priority_from_needs(
         elif farms >= 2 and not storage_exists:
             scores["build_storage"] += 7
 
+        allowed = phase_allowed_priorities(village)
+        for p in list(scores.keys()):
+            if p not in allowed:
+                scores[p] -= 50
+
     ordered = (
         "secure_food",
         "build_storage",
@@ -197,13 +250,13 @@ def apply_phase_guardrails(village: dict, proposed: str) -> str:
     storage_exists = bool(metrics.get("storage_exists", False))
 
     if needs.get("food_buffer_critical"):
-        return "secure_food"
+        return clamp_priority_to_phase(village, "secure_food")
     if (
         needs.get("food_buffer_low")
         and not needs.get("food_surplus")
         and not needs.get("secure_food_deescalate")
     ):
-        return "secure_food"
+        return clamp_priority_to_phase(village, "secure_food")
 
     # Phase 1: village exists but no farming base yet -> push to farms.
     min_farms_target = max(3, int(village.get("population", 0) // 3))
@@ -216,9 +269,9 @@ def apply_phase_guardrails(village: dict, proposed: str) -> str:
 
     # Phase 2: farming base established but no storage -> prioritize storage.
     if farms >= 2 and not storage_exists:
-        return "build_storage"
+        return clamp_priority_to_phase(village, "build_storage")
 
-    return proposed
+    return clamp_priority_to_phase(village, proposed)
 
 
 def apply_village_priority(village: dict, priority: str, tick: int, source: str) -> None:
@@ -1011,6 +1064,8 @@ class LLMBrain:
             priority_history = village.get("priority_history", [])[-4:] if village else []
             active_farms = 0
             phase_hint = "bootstrap"
+            village_phase = (village.get("phase") if village else None) or "survival"
+            phase_allowed = sorted(phase_allowed_priorities(village))
             if village is not None:
                 vcenter = village.get("center", {})
                 cx = vcenter.get("x", agent.x)
@@ -1033,6 +1088,7 @@ class LLMBrain:
                 "Choose only one strategic priority for village development phase.\n"
                 "Return strict JSON only: {\"priority\":\"...\"}\n"
                 "Allowed priorities: secure_food, build_storage, build_housing, expand_farms, improve_logistics, stabilize.\n"
+                "You must choose a priority coherent with the current village_phase.\n"
                 "Hard guidance:\n"
                 "- if phase_hint is found_farms, prioritize expand_farms.\n"
                 "- if phase_hint is build_first_storage, prioritize build_storage.\n"
@@ -1042,6 +1098,8 @@ class LLMBrain:
                 f"farms={active_farms}\n"
                 f"storage_buildings={storage_buildings}\n"
                 f"phase_hint={phase_hint}\n"
+                f"village_phase={village_phase}\n"
+                f"phase_allowed_priorities={phase_allowed}\n"
                 f"food_stock={village.get('storage', {}).get('food', 0) if village else 0}\n"
                 f"wood_stock={village.get('storage', {}).get('wood', 0) if village else 0}\n"
                 f"stone_stock={village.get('storage', {}).get('stone', 0) if village else 0}\n"

@@ -6,6 +6,27 @@ if TYPE_CHECKING:
     from world import World
 
 
+def _detect_village_phase(
+    houses: int,
+    active_farms: int,
+    storage_exists: bool,
+    food_stock: int,
+    pop: int,
+) -> str:
+    p = max(1, pop)
+    if houses < 5:
+        return "bootstrap"
+    if active_farms < 3 or food_stock < p:
+        return "survival"
+    if food_stock >= p * 3 and active_farms >= 10:
+        return "expansion"
+    if houses >= 10 and food_stock >= p * 2:
+        return "growth"
+    if active_farms >= 5 and storage_exists and food_stock >= p:
+        return "stabilize"
+    return "stabilize"
+
+
 def update_village_ai(world: "World") -> None:
     """
     Calcola stato economico e bisogni di ogni villaggio.
@@ -68,10 +89,13 @@ def update_village_ai(world: "World") -> None:
             and active_farms >= min_farms_target
             and avg_hunger >= 55
         )
+        village_phase = _detect_village_phase(houses, active_farms, storage_exists, food_stock, pop)
+        village["phase"] = village_phase
 
         village["metrics"] = {
             "population": pop,
             "avg_hunger": round(avg_hunger, 2),
+            "phase": village_phase,
             "housing_capacity": housing_capacity,
             "food_stock": food_stock,
             "food_buffer_target": food_buffer_target,
@@ -110,6 +134,18 @@ def update_village_ai(world: "World") -> None:
             baseline_priority = "secure_food"
         if baseline_priority == "secure_food" and secure_food_deescalate and not food_buffer_critical:
             baseline_priority = "stabilize"
+
+        # Strategic phase baseline guidance for non-leader governance fallback.
+        if village_phase == "bootstrap":
+            baseline_priority = "expand_farms" if not need_housing else "build_housing"
+        elif village_phase == "survival":
+            baseline_priority = "secure_food" if not need_farms else "expand_farms"
+        elif village_phase == "stabilize" and baseline_priority == "secure_food":
+            baseline_priority = "stabilize"
+        elif village_phase == "growth" and baseline_priority in ("secure_food", "stabilize"):
+            baseline_priority = "build_housing"
+        elif village_phase == "expansion" and baseline_priority in ("secure_food", "stabilize"):
+            baseline_priority = "improve_logistics"
 
         # If no active leader, keep village governance moving with deterministic baseline.
         if village.get("leader_id") is None:
