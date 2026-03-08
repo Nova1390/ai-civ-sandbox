@@ -7,8 +7,9 @@ from typing import Dict, List, Optional, Tuple
 Coord = Tuple[int, int]
 
 
-def heuristic(a: Coord, b: Coord) -> int:
-    return abs(a[0] - b[0]) + abs(a[1] - b[1])
+def heuristic(a: Coord, b: Coord) -> float:
+    # Lower-bound based on minimum movement cost (roads = 0.5).
+    return 0.5 * (abs(a[0] - b[0]) + abs(a[1] - b[1]))
 
 
 def reconstruct_path(came_from: Dict[Coord, Coord], current: Coord) -> List[Coord]:
@@ -49,12 +50,12 @@ def astar(world, start: Coord, goal: Coord, max_nodes: int = 2000) -> Optional[L
     if start == goal:
         return [start]
 
-    open_heap: List[Tuple[int, int, Coord]] = []
+    open_heap: List[Tuple[float, float, Coord]] = []
     heapq.heappush(open_heap, (heuristic(start, goal), 0, start))
 
     came_from: Dict[Coord, Coord] = {}
 
-    g_score: Dict[Coord, int] = {start: 0}
+    g_score: Dict[Coord, float] = {start: 0.0}
     visited = 0
 
     while open_heap:
@@ -68,7 +69,8 @@ def astar(world, start: Coord, goal: Coord, max_nodes: int = 2000) -> Optional[L
             return reconstruct_path(came_from, current)
 
         for neighbor in get_neighbors(world, current):
-            tentative_g = current_g + 1
+            move_cost = float(getattr(world, "movement_cost", lambda x, y: 1.0)(neighbor[0], neighbor[1]))
+            tentative_g = current_g + move_cost
 
             if tentative_g < g_score.get(neighbor, 10**9):
                 came_from[neighbor] = current

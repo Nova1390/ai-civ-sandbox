@@ -622,10 +622,59 @@ class FoodBrain:
             return None
 
         village_id = village["id"]
+        storage_pos = village.get("storage_pos")
+        storage_coord = None
+        if storage_pos:
+            sx, sy = storage_pos.get("x"), storage_pos.get("y")
+            if (sx, sy) in getattr(world, "storage_buildings", set()):
+                storage_coord = (sx, sy)
+        storage_bonus_radius = 5
+        primary_zone_radius = 6
+
         farms = [
             p for p, plot in getattr(world, "farm_plots", {}).items()
             if plot.get("village_id") == village_id
         ]
+
+        zone = village.get("farm_zone_center", village.get("center", {"x": agent.x, "y": agent.y}))
+        zone_coord = (zone.get("x", agent.x), zone.get("y", agent.y))
+
+        def road_proximity_score(pos: Coord) -> int:
+            x, y = pos
+            roads = getattr(world, "roads", set())
+            score = 0
+            if (x, y) in roads:
+                score += 2
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                if (x + dx, y + dy) in roads:
+                    score += 1
+            return score
+
+        def farm_build_score(pos: Coord) -> float:
+            x, y = pos
+            d_agent = abs(x - agent.x) + abs(y - agent.y)
+            cluster_neighbors = sum(1 for fx, fy in farms if abs(fx - x) <= 1 and abs(fy - y) <= 1)
+            road_score = road_proximity_score(pos)
+
+            anchor = storage_coord if storage_coord is not None else zone_coord
+            d_anchor = abs(anchor[0] - x) + abs(anchor[1] - y)
+
+            score = d_anchor * 1.6 + d_agent * 0.35
+            score -= cluster_neighbors * 2.2
+            score -= road_score * 0.6
+
+            # Prefer tight agricultural cluster near storage bonus radius before expanding outwards.
+            if storage_coord is not None:
+                if d_anchor <= storage_bonus_radius:
+                    score -= 8.0
+                else:
+                    score += (d_anchor - storage_bonus_radius) * 1.7
+
+            return score
+
+        def in_primary_zone(pos: Coord) -> bool:
+            cx, cy = (storage_coord if storage_coord is not None else zone_coord)
+            return abs(pos[0] - cx) + abs(pos[1] - cy) <= primary_zone_radius
 
         def valid(pos: Coord, first: bool) -> bool:
             x, y = pos
@@ -645,7 +694,6 @@ class FoodBrain:
             return any(abs(fx - x) <= 1 and abs(fy - y) <= 1 for fx, fy in farms)
 
         if farms:
-            ax, ay = agent.x, agent.y
             candidates = []
             for fx, fy in farms:
                 for dx in (-1, 0, 1):
@@ -656,16 +704,25 @@ class FoodBrain:
                         if valid(p, first=False):
                             candidates.append(p)
             if candidates:
-                return min(candidates, key=lambda p: abs(p[0] - ax) + abs(p[1] - ay))
+                primary_candidates = [p for p in candidates if in_primary_zone(p)]
+                if primary_candidates:
+                    candidates = primary_candidates
+                elif storage_coord is not None:
+                    in_bonus = [
+                        p for p in candidates
+                        if abs(p[0] - storage_coord[0]) + abs(p[1] - storage_coord[1]) <= storage_bonus_radius
+                    ]
+                    if in_bonus:
+                        candidates = in_bonus
+                return min(candidates, key=farm_build_score)
             return None
 
         # First farm: search around farm zone, then around village center as fallback.
-        zone = village.get("farm_zone_center", village.get("center", {"x": agent.x, "y": agent.y}))
         seeds = [
-            (zone.get("x", agent.x), zone.get("y", agent.y)),
+            storage_coord if storage_coord is not None else zone_coord,
+            zone_coord,
             (village.get("center", {}).get("x", agent.x), village.get("center", {}).get("y", agent.y)),
         ]
-        ax, ay = agent.x, agent.y
         for sx, sy in seeds:
             for radius in range(0, 9):
                 candidates = []
@@ -677,7 +734,10 @@ class FoodBrain:
                         if valid(p, first=True):
                             candidates.append(p)
                 if candidates:
-                    return min(candidates, key=lambda p: abs(p[0] - ax) + abs(p[1] - ay))
+                    primary_candidates = [p for p in candidates if in_primary_zone(p)]
+                    if primary_candidates:
+                        candidates = primary_candidates
+                    return min(candidates, key=farm_build_score)
 
         return None
 

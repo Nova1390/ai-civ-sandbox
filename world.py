@@ -133,6 +133,11 @@ class World:
                 return True
         return False
 
+    def movement_cost(self, x: int, y: int) -> float:
+        if (x, y) in self.roads:
+            return 0.5
+        return 1.0
+
     def add_agent(self, agent: Agent):
         if (
             not agent.is_player

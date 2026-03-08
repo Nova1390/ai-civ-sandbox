@@ -305,6 +305,10 @@ class Agent:
         if village is not None:
             storage_food = village.get("storage", {}).get("food", 0)
             village_pop = village.get("population", 0)
+            houses = max(0, int(village.get("houses", 0)))
+            population_cap = houses * 5
+            if village_pop >= population_cap:
+                return
 
         repro_min_hunger = REPRO_MIN_HUNGER
         repro_prob = REPRO_PROB
@@ -375,6 +379,14 @@ class Agent:
                 self.x = nx
                 self.y = ny
                 moved = True
+
+                # Roads reduce movement cost: crossing roads can grant a second short step.
+                if (self.x, self.y) in getattr(world, "roads", set()):
+                    nx2 = self.x + dx
+                    ny2 = self.y + dy
+                    if world.is_walkable(nx2, ny2) and not world.is_occupied(nx2, ny2):
+                        self.x = nx2
+                        self.y = ny2
 
                 # le strade emergono solo da insediamenti veri, non dal caos iniziale
                 if getattr(self, "village_id", None) is not None:

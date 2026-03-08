@@ -9,6 +9,8 @@ PREPARE_WOOD_COST = 1
 PLANT_GROW_TICKS = 35
 HARVEST_YIELD = 1
 HARVEST_BONUS_CHANCE = 0.3
+STORAGE_NEAR_FARM_RADIUS = 5
+PRIMARY_FARM_ZONE_RADIUS = 6
 
 
 def _get_build_wallet(world, agent):
@@ -56,6 +58,13 @@ def try_build_farm(world, agent) -> bool:
     x = agent.x
     y = agent.y
     pos = (x, y)
+
+    primary_center = _primary_farm_center(world, village)
+    if primary_center is not None:
+        pcx, pcy = primary_center
+        has_primary_slot = _has_primary_zone_slot(world, village, village_id, primary_center)
+        if has_primary_slot and (abs(x - pcx) + abs(y - pcy) > PRIMARY_FARM_ZONE_RADIUS):
+            return False
 
     if world.tiles[y][x] != "G":
         return False
@@ -136,7 +145,8 @@ def work_farm(world, agent) -> bool:
 
     if state == "ripe":
         harvest_amount = HARVEST_YIELD
-        if random.random() < HARVEST_BONUS_CHANCE:
+        bonus_chance = HARVEST_BONUS_CHANCE + _storage_farm_bonus_chance(world, village, pos)
+        if random.random() < bonus_chance:
             harvest_amount += 1
         if village is not None:
             village["storage"]["food"] = village["storage"].get("food", 0) + harvest_amount
@@ -164,10 +174,84 @@ def haul_harvest(world, agent) -> bool:
     if plot.get("state") != "ripe":
         return False
 
+    village = world.get_village_by_id(getattr(agent, "village_id", None))
     harvest_amount = HARVEST_YIELD
-    if random.random() < HARVEST_BONUS_CHANCE:
+    bonus_chance = HARVEST_BONUS_CHANCE + _storage_farm_bonus_chance(world, village, pos)
+    if random.random() < bonus_chance:
         harvest_amount += 1
     agent.inventory["food"] = agent.inventory.get("food", 0) + harvest_amount
     plot["state"] = "prepared"
     plot["growth"] = 0
     return True
+
+
+def _storage_farm_bonus_chance(world, village, farm_pos: Coord) -> float:
+    """
+    Storage as logistic hub:
+    farms near storage get a +10% baseline bonus, plus a small distance factor.
+    """
+    if village is None:
+        return 0.0
+    sp = village.get("storage_pos")
+    if not sp:
+        return 0.0
+    sx, sy = sp["x"], sp["y"]
+    if (sx, sy) not in getattr(world, "storage_buildings", set()):
+        return 0.0
+    fx, fy = farm_pos
+    d = abs(fx - sx) + abs(fy - sy)
+    if d > STORAGE_NEAR_FARM_RADIUS:
+        return 0.0
+    # +10% in radius, with up to +10% extra for very close farms.
+    return 0.10 + max(0.0, (STORAGE_NEAR_FARM_RADIUS - d) * 0.02)
+
+
+def _primary_farm_center(world, village) -> Coord | None:
+    if village is None:
+        return None
+    sp = village.get("storage_pos")
+    if sp:
+        sx, sy = sp.get("x"), sp.get("y")
+        if (sx, sy) in getattr(world, "storage_buildings", set()):
+            return (sx, sy)
+    zone = village.get("farm_zone_center", village.get("center"))
+    if not zone:
+        return None
+    zx = zone.get("x")
+    zy = zone.get("y")
+    if zx is None or zy is None:
+        return None
+    return (zx, zy)
+
+
+def _is_valid_primary_slot(world, village, village_id, x: int, y: int) -> bool:
+    pos = (x, y)
+    if not (0 <= x < world.width and 0 <= y < world.height):
+        return False
+    if world.tiles[y][x] != "G":
+        return False
+    if not world.can_build_at(x, y):
+        return False
+    if pos in world.farms or pos in world.farm_plots:
+        return False
+    for sx, sy in world.structures:
+        if abs(sx - x) <= 1 and abs(sy - y) <= 1:
+            return False
+    same_village_farms = [
+        p for p, plot in world.farm_plots.items()
+        if plot.get("village_id") == village_id
+    ]
+    if not same_village_farms:
+        return True
+    return any(abs(fx - x) <= 1 and abs(fy - y) <= 1 for fx, fy in same_village_farms)
+
+
+def _has_primary_zone_slot(world, village, village_id, center: Coord) -> bool:
+    cx, cy = center
+    for x in range(max(0, cx - PRIMARY_FARM_ZONE_RADIUS), min(world.width, cx + PRIMARY_FARM_ZONE_RADIUS + 1)):
+        for y in range(max(0, cy - PRIMARY_FARM_ZONE_RADIUS), min(world.height, cy + PRIMARY_FARM_ZONE_RADIUS + 1)):
+            if abs(x - cx) + abs(y - cy) > PRIMARY_FARM_ZONE_RADIUS:
+                continue
+            if _is_valid_primary_slot(world, village, village_id, x, y):
+                return True
+    return False
