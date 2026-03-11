@@ -457,3 +457,36 @@ def test_duplicate_resharing_is_suppressed() -> None:
     diffuse_local_knowledge(world, receiver)
     snapshot = world.compute_communication_snapshot()
     assert int(snapshot.get("repeated_duplicate_share_suppressed_count", 0)) >= 1
+
+
+def test_familiar_communication_bonus_metric_is_recorded() -> None:
+    world = _flat_world()
+    world.tick = 80
+    donor = Agent(x=10, y=10, brain=None)
+    receiver = Agent(x=11, y=10, brain=None)
+    world.agents = [donor, receiver]
+    ensure_agent_knowledge_state(donor)["known_resource_spots"] = [
+        {
+            "type": "resource_spot",
+            "subject": "food",
+            "location": {"x": 12, "y": 10},
+            "learned_tick": 79,
+            "confidence": 0.9,
+            "source": "direct",
+            "salience": 0.9,
+        }
+    ]
+    receiver.recent_encounters = {
+        donor.agent_id: {
+            "encounter_count": 8,
+            "last_encounter_tick": 80,
+            "familiarity_score": 0.7,
+        }
+    }
+    receiver.subjective_state = {
+        "nearby_agents": [{"agent_id": donor.agent_id, "distance": 1, "same_village": True, "x": donor.x, "y": donor.y}]
+    }
+    receiver.social_memory = {"known_agents": {donor.agent_id: {"times_seen": 6, "same_village": True}}}
+    diffuse_local_knowledge(world, receiver)
+    social = world.compute_social_encounter_snapshot()
+    assert int(social.get("familiar_communication_bonus_applied", 0)) >= 1

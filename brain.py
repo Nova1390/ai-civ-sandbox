@@ -237,7 +237,10 @@ def deterministic_priority_from_needs(
             scores["expand_farms"] += 6
             scores["secure_food"] += 1
         elif farms >= 2 and not storage_exists:
-            scores["build_storage"] += 7
+            if int(village.get("houses", 0)) >= 3:
+                scores["build_storage"] += 5
+            else:
+                scores["build_housing"] += 6
 
         allowed = phase_allowed_priorities(village)
         for p in list(scores.keys()):
@@ -294,9 +297,12 @@ def apply_phase_guardrails(village: dict, proposed: str) -> str:
         if needs.get("food_urgent"):
             return "expand_farms"
 
-    # Phase 2: farming base established but no storage -> prioritize storage.
+    # Phase 2: farming base established. Prioritize housing materialization first,
+    # then collective storage once a small house cluster exists.
     if farms >= 2 and not storage_exists:
-        return clamp_priority_to_phase(village, "build_storage")
+        if int(village.get("houses", 0)) >= 3:
+            return clamp_priority_to_phase(village, "build_storage")
+        return clamp_priority_to_phase(village, "build_housing")
 
     return clamp_priority_to_phase(village, proposed)
 
@@ -884,11 +890,15 @@ class FoodBrain:
                 bx = int(building.get("x", 0))
                 by = int(building.get("y", 0))
                 dist = abs(agent.x - bx) + abs(agent.y - by)
-                candidates.append((dist, str(building.get("building_id", "")), bx, by))
+                progress = int(building.get("construction_progress", 0))
+                required = max(1, int(building.get("construction_required_work", 1)))
+                progress_rank = 0 if progress > 0 else 1
+                completion_rank = -float(progress) / float(required)
+                candidates.append((progress_rank, completion_rank, dist, str(building.get("building_id", "")), bx, by))
             if not candidates:
                 return None
-            candidates.sort(key=lambda item: (item[0], item[1]))
-            _, _, tx, ty = candidates[0]
+            candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
+            _, _, _, _, tx, ty = candidates[0]
             return (tx, ty)
 
         def _nearest_under_construction_site_with_needs() -> Optional[Tuple[int, int]]:
@@ -917,11 +927,26 @@ class FoodBrain:
                 dist = abs(agent.x - bx) + abs(agent.y - by)
                 waiting_tick = int(building.get("builder_waiting_tick", -10_000))
                 recent_wait = 0 if int(getattr(world, "tick", 0)) - waiting_tick <= 24 else 1
-                candidates.append((recent_wait, dist, str(building.get("building_id", "")), bx, by))
+                local_delivery_bonus = 0
+                if hasattr(world, "secondary_nucleus_delivery_priority"):
+                    try:
+                        local_delivery_bonus = int(world.secondary_nucleus_delivery_priority(agent, building))
+                    except Exception:
+                        local_delivery_bonus = 0
+                if hasattr(world, "storage_delivery_priority_bonus"):
+                    try:
+                        local_delivery_bonus += int(world.storage_delivery_priority_bonus(agent, building))
+                    except Exception:
+                        pass
+                progress = int(building.get("construction_progress", 0))
+                required = max(1, int(building.get("construction_required_work", 1)))
+                progress_rank = 0 if progress > 0 else 1
+                completion_rank = -float(progress) / float(required)
+                candidates.append((recent_wait, progress_rank, completion_rank, -int(local_delivery_bonus), dist, str(building.get("building_id", "")), bx, by))
             if not candidates:
                 return None
-            candidates.sort(key=lambda item: (item[0], item[1], item[2]))
-            _, _, _, tx, ty = candidates[0]
+            candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3], item[4], item[5]))
+            _, _, _, _, _, _, tx, ty = candidates[0]
             return (tx, ty)
 
         def _village_by_uid(vuid: str) -> Optional[Dict[str, Any]]:
@@ -1007,10 +1032,67 @@ class FoodBrain:
             food_bias = 0.0
             if hasattr(world, "camp_has_food_for_agent") and bool(world.camp_has_food_for_agent(agent, max_distance=4)):
                 food_bias = 0.06
-            keep_camp_orbit = 0.28 + ((happiness - 50.0) / 225.0) + food_bias
+            familiar_camp_bonus = 0.0
+            if isinstance(camp, dict):
+                encounter_memory = getattr(agent, "recent_encounters", {})
+                if isinstance(encounter_memory, dict):
+                    cx, cy = int(camp.get("x", agent.x)), int(camp.get("y", agent.y))
+                    familiar_near_camp = 0
+                    for other in getattr(world, "agents", []):
+                        if other is agent or not getattr(other, "alive", False):
+                            continue
+                        if abs(int(getattr(other, "x", 0)) - cx) + abs(int(getattr(other, "y", 0)) - cy) > 4:
+                            continue
+                        enc = encounter_memory.get(str(getattr(other, "agent_id", "")), {})
+                        if isinstance(enc, dict) and float(enc.get("familiarity_score", 0.0)) >= 0.25:
+                            familiar_near_camp += 1
+                    if familiar_near_camp > 0 and float(getattr(agent, "hunger", 100.0)) >= 30.0:
+                        crowd_count = 0
+                        for other in getattr(world, "agents", []):
+                            if not getattr(other, "alive", False):
+                                continue
+                            if abs(int(getattr(other, "x", 0)) - cx) + abs(int(getattr(other, "y", 0)) - cy) <= 3:
+                                crowd_count += 1
+                        density_scale = 1.0
+                        if crowd_count >= 8:
+                            density_scale = 0.45
+                            if hasattr(world, "record_social_encounter_event"):
+                                world.record_social_encounter_event("dense_area_social_bias_reductions")
+                                world.record_social_encounter_event("overcrowded_familiar_bias_suppressed")
+                        elif crowd_count >= 6:
+                            density_scale = 0.7
+                            if hasattr(world, "record_social_encounter_event"):
+                                world.record_social_encounter_event("dense_area_social_bias_reductions")
+                        familiar_camp_bonus = min(0.12, float(familiar_near_camp) * 0.04) * density_scale
+                        if hasattr(world, "record_social_encounter_event"):
+                            world.record_social_encounter_event("familiar_camp_support_bias_events")
+            keep_camp_orbit = 0.28 + ((happiness - 50.0) / 225.0) + food_bias + familiar_camp_bonus
             if not for_rest and dist <= 7 and random.random() >= max(0.12, min(0.5, keep_camp_orbit)):
                 return None
             return (target, camp_id, camp_uid)
+
+        def _familiar_social_anchor_target() -> Optional[Coord]:
+            if float(getattr(agent, "hunger", 100.0)) < 35.0:
+                return None
+            subjective = getattr(agent, "subjective_state", {})
+            attention = subjective.get("attention", {}) if isinstance(subjective, dict) else {}
+            familiar = attention.get("familiar_agents_nearby", []) if isinstance(attention, dict) else []
+            density_signal = float(attention.get("social_density_signal", 0.0)) if isinstance(attention, dict) else 0.0
+            if not isinstance(familiar, list) or not familiar:
+                return None
+            if density_signal >= 0.82:
+                if hasattr(world, "record_social_encounter_event"):
+                    world.record_social_encounter_event("overcrowded_familiar_bias_suppressed")
+                return None
+            target = self._attention_social_target(agent, same_village_only=False)
+            if target is None:
+                return None
+            bias = 0.10 + min(0.25, density_signal * 0.25) + min(0.15, float(len(familiar)) * 0.05)
+            if random.random() >= max(0.06, min(0.35, bias)):
+                return None
+            if hasattr(world, "record_social_encounter_event"):
+                world.record_social_encounter_event("familiar_anchor_exploration_events")
+            return target
 
         if task == "rest":
             region_uid = str(world._resolve_agent_work_village_uid(agent) or "") if hasattr(world, "_resolve_agent_work_village_uid") else ""
@@ -1125,11 +1207,24 @@ class FoodBrain:
             self._record_gap_block(world, agent, "no_resource_target")
 
         if task == "build_storage":
+            if hasattr(world, "secondary_nucleus_context_for_agent"):
+                try:
+                    nctx = world.secondary_nucleus_context_for_agent(agent, max_distance=14)
+                except Exception:
+                    nctx = {}
+                camp_pos = nctx.get("camp_pos", ()) if isinstance(nctx, dict) else ()
+                if bool(isinstance(nctx, dict) and nctx.get("materializing", False)) and len(camp_pos) == 2:
+                    if abs(int(agent.x) - int(camp_pos[0])) + abs(int(agent.y) - int(camp_pos[1])) > 6:
+                        return self.move_towards(agent, world, (int(camp_pos[0]), int(camp_pos[1])))
             salient_storage = self._attention_building_target(agent, world, {"storage"})
             if salient_storage is not None:
+                if abs(int(agent.x) - int(salient_storage[0])) + abs(int(agent.y) - int(salient_storage[1])) <= 1:
+                    return None
                 return self.move_towards(agent, world, salient_storage)
             site_target = _nearest_construction_site_target("storage")
             if site_target is not None:
+                if abs(int(agent.x) - int(site_target[0])) + abs(int(agent.y) - int(site_target[1])) <= 1:
+                    return None
                 return self.move_towards(agent, world, site_target)
             collaborator = self._attention_social_target(agent, same_village_only=True)
             if collaborator is not None and random.random() < 0.2:
@@ -1158,13 +1253,34 @@ class FoodBrain:
                 storage_pos = village.get("storage_pos")
                 if storage_pos:
                     return self.move_towards(agent, world, (storage_pos["x"], storage_pos["y"]))
+            if hasattr(world, "secondary_nucleus_context_for_agent"):
+                try:
+                    nctx = world.secondary_nucleus_context_for_agent(agent, max_distance=14)
+                except Exception:
+                    nctx = {}
+                camp_pos = nctx.get("camp_pos", ()) if isinstance(nctx, dict) else ()
+                if bool(isinstance(nctx, dict) and nctx.get("materializing", False)) and len(camp_pos) == 2:
+                    return self.move_towards(agent, world, (int(camp_pos[0]), int(camp_pos[1])))
 
         if task == "build_house":
+            if hasattr(world, "secondary_nucleus_context_for_agent"):
+                try:
+                    nctx = world.secondary_nucleus_context_for_agent(agent, max_distance=14)
+                except Exception:
+                    nctx = {}
+                camp_pos = nctx.get("camp_pos", ()) if isinstance(nctx, dict) else ()
+                if bool(isinstance(nctx, dict) and nctx.get("materializing", False)) and len(camp_pos) == 2:
+                    if abs(int(agent.x) - int(camp_pos[0])) + abs(int(agent.y) - int(camp_pos[1])) > 6:
+                        return self.move_towards(agent, world, (int(camp_pos[0]), int(camp_pos[1])))
             salient_house = self._attention_building_target(agent, world, {"house", "storage"})
             if salient_house is not None:
+                if abs(int(agent.x) - int(salient_house[0])) + abs(int(agent.y) - int(salient_house[1])) <= 1:
+                    return None
                 return self.move_towards(agent, world, salient_house)
             site_target = _nearest_construction_site_target("house")
             if site_target is not None:
+                if abs(int(agent.x) - int(site_target[0])) + abs(int(agent.y) - int(site_target[1])) <= 1:
+                    return None
                 return self.move_towards(agent, world, site_target)
             collaborator = self._attention_social_target(agent, same_village_only=True)
             if collaborator is not None and random.random() < 0.2:
@@ -1181,6 +1297,14 @@ class FoodBrain:
             village_home = self._get_known_village_center(agent, world)
             if village_home is not None:
                 return self.move_towards(agent, world, village_home)
+            if hasattr(world, "secondary_nucleus_context_for_agent"):
+                try:
+                    nctx = world.secondary_nucleus_context_for_agent(agent, max_distance=14)
+                except Exception:
+                    nctx = {}
+                camp_pos = nctx.get("camp_pos", ()) if isinstance(nctx, dict) else ()
+                if bool(isinstance(nctx, dict) and nctx.get("materializing", False)) and len(camp_pos) == 2:
+                    return self.move_towards(agent, world, (int(camp_pos[0]), int(camp_pos[1])))
 
         if task == "gather_materials":
             village = world.get_village_by_id(getattr(agent, "village_id", None))
@@ -1427,6 +1551,10 @@ class FoodBrain:
             if hasattr(world, "record_social_gravity_event"):
                 world.record_social_gravity_event(event_key, village_uid=uid or None)
             return self.move_towards(agent, world, target)
+
+        familiar_target = _familiar_social_anchor_target()
+        if familiar_target is not None:
+            return self.move_towards(agent, world, familiar_target)
 
         camp_target = _camp_return_target(for_rest=False)
         if camp_target is not None:
@@ -1776,6 +1904,12 @@ class FoodBrain:
             score = d_anchor * 1.6 + d_agent * 0.35
             score -= cluster_neighbors * 2.2
             score -= road_score * 0.6
+            if hasattr(world, "farm_site_productivity_score"):
+                try:
+                    productivity = float(world.farm_site_productivity_score(int(x), int(y)))
+                    score -= min(6.0, productivity * 0.8)
+                except Exception:
+                    pass
 
             # Prefer tight agricultural cluster near storage bonus radius before expanding outwards.
             if storage_coord is not None:
@@ -2021,6 +2155,13 @@ class FoodBrain:
         return None
 
     def wander(self, agent, world) -> Tuple[str, ...]:
+        if hasattr(world, "suggest_low_density_exploration_step") and not self._is_urgent_movement_context(agent, world):
+            suggestion = world.suggest_low_density_exploration_step(agent)
+            if isinstance(suggestion, tuple) and len(suggestion) == 2:
+                dx, dy = int(suggestion[0]), int(suggestion[1])
+                nx, ny = int(agent.x) + dx, int(agent.y) + dy
+                if world.is_walkable(nx, ny) and not world.is_occupied(nx, ny):
+                    return ("move", dx, dy)
         dirs = [(1, 0), (-1, 0), (0, 1), (0, -1), (0, 0)]
         random.shuffle(dirs)
         avoid_pos = getattr(agent, "movement_prev_tile", None)

@@ -29,13 +29,26 @@
   }
 
   function resizeCanvasToContainer() {
-    const w = Math.max(320, Math.floor(mapWrap.clientWidth));
-    const h = Math.max(320, Math.floor(mapWrap.clientHeight));
+    const wrapW = Math.max(1, Math.floor(mapWrap.clientWidth));
+    const wrapH = Math.max(1, Math.floor(mapWrap.clientHeight));
+    const data = State.data;
+
+    let w = wrapW;
+    let h = wrapH;
+    if (data && Number.isFinite(Number(data.width)) && Number.isFinite(Number(data.height))) {
+      const worldPxW = Math.max(1, Math.floor((Number(data.width) || 1) * Camera.cellSize));
+      const worldPxH = Math.max(1, Math.floor((Number(data.height) || 1) * Camera.cellSize));
+      w = Math.max(1, Math.min(wrapW, worldPxW));
+      h = Math.max(1, Math.min(wrapH, worldPxH));
+    }
+
     if (canvas.width !== w || canvas.height !== h) {
       canvas.width = w;
       canvas.height = h;
     }
-    if (State.data) Camera.clamp(State.data, canvas);
+    canvas.style.width = `${w}px`;
+    canvas.style.height = `${h}px`;
+    if (data) Camera.clamp(data, canvas);
   }
 
   function applyApiAndRestart() {
@@ -73,6 +86,7 @@
 
     const data = State.data;
     if (data && Number.isFinite(Number(data.width)) && Number.isFinite(Number(data.height))) {
+      resizeCanvasToContainer();
       Camera.centerOn(Math.floor(data.width / 2), Math.floor(data.height / 2), canvas, data);
     }
   }
@@ -166,18 +180,21 @@
     const px = event.clientX - rect.left;
     const py = event.clientY - rect.top;
     Camera.zoomBy(event.deltaY < 0 ? 2 : -2, px, py, canvas, data);
+    resizeCanvasToContainer();
   }, { passive: false });
 
   zoomInBtn.addEventListener("click", () => {
     const data = State.data;
     if (!data) return;
     Camera.zoomBy(2, canvas.width / 2, canvas.height / 2, canvas, data);
+    resizeCanvasToContainer();
   });
 
   zoomOutBtn.addEventListener("click", () => {
     const data = State.data;
     if (!data) return;
     Camera.zoomBy(-2, canvas.width / 2, canvas.height / 2, canvas, data);
+    resizeCanvasToContainer();
   });
 
   window.addEventListener("keydown", (event) => {
@@ -216,7 +233,10 @@
     try {
       await State.loadStatic(true);
       await State.fetchDynamic();
-      if (State.data) Camera.clamp(State.data, canvas);
+      if (State.data) {
+        resizeCanvasToContainer();
+        Camera.clamp(State.data, canvas);
+      }
     } catch (_) {
       // Status panel shows error.
     }

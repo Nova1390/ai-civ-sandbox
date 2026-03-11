@@ -911,6 +911,147 @@ def test_choose_next_prefers_recommended_over_available() -> None:
     assert chosen in recommended
 
 
+def test_house_first_policy_defers_storage_in_early_nucleus() -> None:
+    world = _flat_grass_world()
+    village = _village(tier=1, population=7, houses=1, center_x=10, center_y=10)
+    village["needs"] = {"need_storage": True, "need_housing": True}
+    world.villages = [village]
+    world.farm_plots[(9, 10)] = {"x": 9, "y": 10, "village_id": 1}
+    world.roads.add((10, 9))
+
+    chosen = building_system.choose_next_building_type_for_village(world, village)
+    assert chosen == "house"
+
+
+def test_storage_becomes_preferred_after_house_cluster_forms() -> None:
+    world = _flat_grass_world()
+    village = _village(tier=1, population=6, houses=4, center_x=10, center_y=10)
+    village["needs"] = {"need_storage": True, "need_housing": False}
+    village["storage"] = {"food": 14, "wood": 0, "stone": 0}
+    world.villages = [village]
+    world.place_building("house", 10, 10, village_id=1, village_uid=village["village_uid"])
+    world.place_building("house", 11, 10, village_id=1, village_uid=village["village_uid"])
+    world.place_building("house", 10, 11, village_id=1, village_uid=village["village_uid"])
+    world.farm_plots[(9, 10)] = {"x": 9, "y": 10, "village_id": 1}
+    world.camp_food_stats["camp_food_deposits"] = 8
+    world.camp_food_stats["domestic_storage_full_events"] = 3
+    world.is_village_surplus_sustained = lambda _v: True  # type: ignore[assignment]
+
+    chosen = building_system.choose_next_building_type_for_village(world, village)
+    assert chosen == "storage"
+
+
+def test_storage_not_preferred_when_surplus_not_sustained_even_if_cluster_is_mature() -> None:
+    world = _flat_grass_world()
+    village = _village(tier=1, population=10, houses=4, center_x=10, center_y=10)
+    village["needs"] = {"need_storage": True, "need_housing": False}
+    village["storage"] = {"food": 16, "wood": 0, "stone": 0}
+    world.villages = [village]
+    world.place_building("house", 10, 10, village_id=1, village_uid=village["village_uid"])
+    world.place_building("house", 11, 10, village_id=1, village_uid=village["village_uid"])
+    world.place_building("house", 10, 11, village_id=1, village_uid=village["village_uid"])
+    world.camp_food_stats["camp_food_deposits"] = 12
+    world.camp_food_stats["domestic_storage_full_events"] = 4
+    world.is_village_surplus_sustained = lambda _v: False  # type: ignore[assignment]
+
+    chosen = building_system.choose_next_building_type_for_village(world, village)
+    assert chosen != "storage"
+
+
+def test_storage_attempt_is_deferred_until_house_cluster_exists() -> None:
+    world = _flat_grass_world()
+    village = _village(tier=1, population=7, houses=1, center_x=10, center_y=10)
+    village["needs"] = {"need_storage": True}
+    world.villages = [village]
+    world.farm_plots[(9, 10)] = {"x": 9, "y": 10, "village_id": 1}
+    builder = Agent(x=10, y=10, brain=None, is_player=False, player_id=None)
+    builder.village_id = 1
+    builder.role = "builder"
+    world.agents = [builder]
+    for idx in range(6):
+        supporter = Agent(x=9 + (idx % 3), y=9 + (idx // 3), brain=None, is_player=False, player_id=None)
+        supporter.village_id = 1
+        world.agents.append(supporter)
+
+    result = building_system.try_expand_village_buildings(world, village)
+    if result["building_type"] == "storage":
+        assert result["success"] is False
+        assert result["reason"] in {
+            "storage_deferred_due_to_low_house_cluster",
+            "storage_deferred_due_to_low_throughput",
+            "storage_deferred_due_to_low_buffer_pressure",
+            "storage_deferred_due_to_low_surplus",
+        }
+
+
+def test_storage_deferred_when_house_cluster_exists_but_throughput_is_low() -> None:
+    world = _flat_grass_world()
+    village = _village(tier=1, population=8, houses=4, center_x=10, center_y=10)
+    village["needs"] = {"need_storage": True}
+    world.villages = [village]
+    world.place_building("house", 10, 10, village_id=1, village_uid=village["village_uid"])
+    world.place_building("house", 11, 10, village_id=1, village_uid=village["village_uid"])
+    world.place_building("house", 10, 11, village_id=1, village_uid=village["village_uid"])
+    builder = Agent(x=10, y=10, brain=None, is_player=False, player_id=None)
+    builder.village_id = 1
+    builder.role = "builder"
+    world.agents = [builder]
+
+    result = building_system.try_expand_village_buildings(world, village)
+    if result["building_type"] == "storage":
+        assert result["success"] is False
+        assert result["reason"] == "storage_deferred_due_to_low_throughput"
+
+
+def test_storage_allowed_when_mature_house_cluster_and_buffer_pressure_exist() -> None:
+    world = _flat_grass_world()
+    village = _village(tier=1, population=10, houses=4, center_x=10, center_y=10)
+    village["needs"] = {"need_storage": True, "need_housing": False}
+    world.villages = [village]
+    world.place_building("house", 10, 10, village_id=1, village_uid=village["village_uid"])
+    world.place_building("house", 11, 10, village_id=1, village_uid=village["village_uid"])
+    world.place_building("house", 10, 11, village_id=1, village_uid=village["village_uid"])
+    world.camp_food_stats["camp_food_deposits"] = 8
+    world.camp_food_stats["domestic_storage_full_events"] = 3
+    world.is_village_surplus_sustained = lambda _v: True  # type: ignore[assignment]
+    builder = Agent(x=10, y=10, brain=None, is_player=False, player_id=None)
+    builder.village_id = 1
+    builder.role = "builder"
+    world.agents = [builder]
+
+    result = building_system.try_expand_village_buildings(world, village)
+    if result["building_type"] == "storage":
+        assert result["success"] is True
+
+
+def test_storage_deferred_due_to_low_surplus_when_surplus_disappears() -> None:
+    world = _flat_grass_world()
+    village = _village(tier=1, population=10, houses=4, center_x=10, center_y=10)
+    village["needs"] = {"need_storage": True, "need_housing": False}
+    world.villages = [village]
+    world.place_building("house", 10, 10, village_id=1, village_uid=village["village_uid"])
+    world.place_building("house", 11, 10, village_id=1, village_uid=village["village_uid"])
+    world.place_building("house", 10, 11, village_id=1, village_uid=village["village_uid"])
+    world.camp_food_stats["camp_food_deposits"] = 12
+    world.camp_food_stats["domestic_storage_full_events"] = 4
+    builder = Agent(x=10, y=10, brain=None, is_player=False, player_id=None)
+    builder.village_id = 1
+    builder.role = "builder"
+    world.agents = [builder]
+
+    world.is_village_surplus_sustained = lambda _v: True  # type: ignore[assignment]
+    first = building_system.try_expand_village_buildings(world, village)
+    if first["building_type"] == "storage":
+        assert first["success"] is True
+
+    # Surplus vanishes; storage attempts should now defer with explicit reason.
+    world.is_village_surplus_sustained = lambda _v: False  # type: ignore[assignment]
+    second = building_system.try_expand_village_buildings(world, village)
+    if second["building_type"] == "storage":
+        assert second["success"] is False
+        assert second["reason"] == "storage_deferred_due_to_low_surplus"
+
+
 def test_build_policy_attempts_try_build_type_successfully() -> None:
     world = _flat_grass_world()
     village = _village(tier=2, population=14, houses=6)
@@ -1052,6 +1193,29 @@ def test_serialized_village_metrics_include_production_counters() -> None:
     assert "total_stone_gathered" in vm
     assert "wood_from_lumberyards" in vm
     assert "stone_from_mines" in vm
+
+
+def test_settlement_progression_metrics_capture_house_clusters_and_storage_order() -> None:
+    world = _flat_grass_world()
+    village = _village(village_id=1, uid="v-000001", population=8, houses=3, center_x=10, center_y=10)
+    world.villages = [village]
+
+    world.place_building("house", 10, 10, village_id=1, village_uid=village["village_uid"])
+    world.place_building("house", 11, 10, village_id=1, village_uid=village["village_uid"])
+    world.update_settlement_progression_metrics()
+    first = world.compute_settlement_progression_snapshot()
+    assert int(first["house_cluster_count"]) >= 1
+    assert float(first["avg_houses_per_cluster"]) >= 2.0
+
+    world.place_building("storage", 10, 11, village_id=1, village_uid=village["village_uid"])
+    world.update_settlement_progression_metrics()
+    second = world.compute_settlement_progression_snapshot()
+    assert int(second["storage_built_after_cluster_count"]) >= 1
+    assert int(second["storage_built_without_cluster_count"]) == 0
+    assert "storage_emergence_attempts" in second
+    assert "storage_emergence_successes" in second
+    assert "storage_relief_of_domestic_pressure_events" in second
+    assert "storage_relief_of_camp_pressure_events" in second
 
 
 def test_market_food_pressure_lower_with_high_food_supply() -> None:
@@ -2178,6 +2342,254 @@ def test_try_build_storage_can_bootstrap_storage_pos_when_missing() -> None:
     assert "x" in village["storage_pos"] and "y" in village["storage_pos"]
     sites = [b for b in world.buildings.values() if b.get("type") == "storage" and b.get("operational_state") == "under_construction"]
     assert len(sites) == 1
+
+
+def test_storage_siting_prefers_house_cluster_area_when_present() -> None:
+    world = _flat_grass_world()
+    village = _village(village_id=1, uid="v-000001", tier=1, population=10, houses=4, center_x=14, center_y=14)
+    village.pop("storage_pos", None)
+    world.villages = [village]
+    world.place_building("house", 14, 14, village_id=1, village_uid=village["village_uid"])
+    world.place_building("house", 15, 14, village_id=1, village_uid=village["village_uid"])
+    world.place_building("house", 14, 15, village_id=1, village_uid=village["village_uid"])
+    builder = Agent(x=14, y=14, brain=None, is_player=False, player_id=None)
+    builder.village_id = 1
+    builder.role = "builder"
+
+    assert building_system.try_build_storage(world, builder) is False
+    storage_pos = village.get("storage_pos", {})
+    sx = int(storage_pos.get("x", 0))
+    sy = int(storage_pos.get("y", 0))
+    assert abs(sx - 14) + abs(sy - 14) <= 4
+
+
+def test_storage_builder_task_continuity_retained_with_active_storage_site() -> None:
+    world = _flat_grass_world()
+    village = _village(village_id=1, uid="v-000001", tier=1, population=10, houses=4, center_x=12, center_y=12)
+    village["priority"] = "secure_food"
+    village["needs"] = {"need_storage": False, "need_housing": False}
+    world.villages = [village]
+    _ = building_system.place_building(
+        world,
+        "storage",
+        (12, 12),
+        village_id=1,
+        village_uid=village["village_uid"],
+        operational_state="under_construction",
+        construction_request={"wood_needed": 4, "wood_reserved": 0, "stone_needed": 2, "stone_reserved": 0, "food_needed": 0, "food_reserved": 0},
+        construction_buffer={"wood": 0, "stone": 0, "food": 0},
+        construction_progress=0,
+        construction_required_work=6,
+    )
+    builder = Agent(x=12, y=12, brain=None, is_player=False, player_id=None)
+    builder.village_id = 1
+    builder.role = "builder"
+    builder.hunger = 70
+    builder.task = "build_storage"
+    builder.role_task_persisted_task = "build_storage"
+    builder.role_task_persistence_until_tick = int(world.tick) + 5
+
+    builder.update_role_task(world)
+    assert builder.task == "build_storage"
+    snap = world.compute_settlement_progression_snapshot()
+    assert int(snap["storage_builder_commitment_retained_ticks"]) >= 1
+
+
+def test_storage_material_delivery_prefers_active_storage_site() -> None:
+    world = _flat_grass_world()
+    village = _village(village_id=1, uid="v-000001", tier=1, population=10, houses=4, center_x=12, center_y=12)
+    world.villages = [village]
+    world.place_building("house", 11, 11, village_id=1, village_uid=village["village_uid"])
+    world.place_building("house", 12, 11, village_id=1, village_uid=village["village_uid"])
+    world.place_building("house", 11, 12, village_id=1, village_uid=village["village_uid"])
+    source_storage = world.place_building("storage", 8, 8)
+    assert source_storage is not None
+    world.buildings[source_storage["building_id"]]["village_id"] = 1
+    world.buildings[source_storage["building_id"]]["village_uid"] = village["village_uid"]
+    world.buildings[source_storage["building_id"]]["storage"]["wood"] = 8
+    world.buildings[source_storage["building_id"]]["storage"]["stone"] = 8
+    village["storage"] = {"food": 0, "wood": 8, "stone": 8}
+
+    storage_site = building_system.place_building(
+        world,
+        "storage",
+        (12, 12),
+        village_id=1,
+        village_uid=village["village_uid"],
+        operational_state="under_construction",
+        construction_request={"wood_needed": 4, "wood_reserved": 0, "stone_needed": 2, "stone_reserved": 0, "food_needed": 0, "food_reserved": 0},
+        construction_buffer={"wood": 0, "stone": 0, "food": 0},
+        construction_progress=2,
+        construction_required_work=6,
+    )
+    house_site = building_system.place_building(
+        world,
+        "house",
+        (15, 12),
+        village_id=1,
+        village_uid=village["village_uid"],
+        operational_state="under_construction",
+        construction_request={"wood_needed": HOUSE_WOOD_COST, "wood_reserved": 0, "stone_needed": HOUSE_STONE_COST, "stone_reserved": 0, "food_needed": 0, "food_reserved": 0},
+        construction_buffer={"wood": 0, "stone": 0, "food": 0},
+        construction_progress=0,
+        construction_required_work=4,
+    )
+    assert storage_site is not None and house_site is not None
+    hauler = Agent(x=8, y=8, brain=None, is_player=False, player_id=None)
+    hauler.village_id = 1
+    hauler.role = "hauler"
+
+    assert building_system.run_hauler_construction_delivery(world, hauler) is True
+    assert str(getattr(hauler, "delivery_target_building_id", "")) == str(storage_site["building_id"])
+
+
+def test_storage_completion_metrics_update_on_progress_and_completion() -> None:
+    world = _flat_grass_world()
+    village = _village(village_id=1, uid="v-000001", tier=1, population=10, houses=4, center_x=12, center_y=12)
+    world.villages = [village]
+    site = building_system.place_building(
+        world,
+        "storage",
+        (12, 12),
+        village_id=1,
+        village_uid=village["village_uid"],
+        operational_state="under_construction",
+        construction_request={"wood_needed": 4, "wood_reserved": 0, "stone_needed": 2, "stone_reserved": 0, "food_needed": 0, "food_reserved": 0},
+        construction_buffer={"wood": 4, "stone": 2, "food": 0},
+        construction_progress=5,
+        construction_required_work=6,
+    )
+    assert site is not None
+    builder = Agent(x=12, y=12, brain=None, is_player=False, player_id=None)
+    builder.village_id = 1
+    builder.role = "builder"
+    assert building_system.try_build_storage(world, builder) is True
+    snap = world.compute_settlement_progression_snapshot()
+    assert int(snap["storage_construction_progress_ticks"]) >= 1
+    assert int(snap["storage_construction_completed_count"]) >= 1
+    assert int(snap["storage_emergence_successes"]) >= 1
+
+
+def test_storage_construction_records_survival_interruption() -> None:
+    world = _flat_grass_world()
+    village = _village(village_id=1, uid="v-000001", tier=1, population=10, houses=4, center_x=12, center_y=12)
+    world.villages = [village]
+    builder = Agent(x=12, y=12, brain=None, is_player=False, player_id=None)
+    builder.village_id = 1
+    builder.role = "builder"
+    builder.task = "build_storage"
+    builder.hunger = 5
+    world.agents = [builder]
+
+    builder.update(world)
+    snap = world.compute_settlement_progression_snapshot()
+    assert int(snap["storage_construction_interrupted_survival"]) >= 1
+
+
+def test_direct_local_material_drop_to_construction_updates_throughput_metrics() -> None:
+    world = _flat_grass_world()
+    village = _village(village_id=1, uid="v-000001", tier=1, population=10, houses=4, center_x=12, center_y=12)
+    world.villages = [village]
+    site = building_system.place_building(
+        world,
+        "house",
+        (12, 12),
+        village_id=1,
+        village_uid=village["village_uid"],
+        operational_state="under_construction",
+        construction_request={"wood_needed": HOUSE_WOOD_COST, "wood_reserved": 0, "stone_needed": HOUSE_STONE_COST, "stone_reserved": 0, "food_needed": 0, "food_reserved": 0},
+        construction_buffer={"wood": 0, "stone": 0, "food": 0},
+        construction_progress=1,
+        construction_required_work=4,
+    )
+    assert site is not None
+    worker = Agent(x=12, y=11, brain=None, is_player=False, player_id=None)
+    worker.village_id = 1
+    worker.inventory["wood"] = 2
+    worker.inventory["stone"] = 1
+
+    moved = world.try_direct_material_drop_to_nearby_construction(worker, max_distance=2)
+    assert moved > 0
+    buf = world.buildings[str(site["building_id"])]["construction_buffer"]
+    assert int(buf.get("wood", 0)) >= 1
+    snap = world.compute_settlement_progression_snapshot()
+    assert int(snap["construction_material_delivery_events"]) >= moved
+    assert int(snap["construction_material_delivery_to_active_site"]) >= moved
+
+
+def test_material_drift_metric_records_storage_deposit_while_construction_active() -> None:
+    world = _flat_grass_world()
+    village = _village(village_id=1, uid="v-000001", tier=1, population=10, houses=4, center_x=12, center_y=12)
+    world.villages = [village]
+    site = building_system.place_building(
+        world,
+        "house",
+        (12, 12),
+        village_id=1,
+        village_uid=village["village_uid"],
+        operational_state="under_construction",
+        construction_request={"wood_needed": HOUSE_WOOD_COST, "wood_reserved": 0, "stone_needed": HOUSE_STONE_COST, "stone_reserved": 0, "food_needed": 0, "food_reserved": 0},
+        construction_buffer={"wood": 0, "stone": 0, "food": 0},
+        construction_progress=0,
+        construction_required_work=4,
+    )
+    assert site is not None
+    storage = world.place_building("storage", 8, 8)
+    assert storage is not None
+    world.buildings[str(storage["building_id"])]["village_id"] = 1
+    world.buildings[str(storage["building_id"])]["village_uid"] = village["village_uid"]
+    hauler = Agent(x=8, y=8, brain=None, is_player=False, player_id=None)
+    hauler.village_id = 1
+    hauler.role = "hauler"
+    hauler.inventory["wood"] = 2
+
+    assert building_system.deposit_agent_inventory_to_storage(world, hauler) is True
+    snap = world.compute_settlement_progression_snapshot()
+    assert int(snap["construction_material_delivery_drift_events"]) >= 1
+
+
+def test_surplus_storage_attempt_and_abandon_metrics_update() -> None:
+    world = _flat_grass_world()
+    village = _village(tier=1, population=10, houses=4, center_x=10, center_y=10)
+    village["needs"] = {"need_storage": True, "need_housing": False}
+    world.villages = [village]
+    world.place_building("house", 10, 10, village_id=1, village_uid=village["village_uid"])
+    world.place_building("house", 11, 10, village_id=1, village_uid=village["village_uid"])
+    world.place_building("house", 10, 11, village_id=1, village_uid=village["village_uid"])
+    world.camp_food_stats["camp_food_deposits"] = 12
+    world.camp_food_stats["domestic_storage_full_events"] = 4
+    world.is_village_surplus_sustained = lambda _v: True  # type: ignore[assignment]
+
+    builder = Agent(x=10, y=10, brain=None, is_player=False, player_id=None)
+    builder.village_id = 1
+    builder.role = "builder"
+    world.agents = [builder]
+    for idx in range(6):
+        supporter = Agent(x=9 + (idx % 3), y=9 + (idx // 3), brain=None, is_player=False, player_id=None)
+        supporter.village_id = 1
+        world.agents.append(supporter)
+
+    assert building_system.choose_next_building_type_for_village(world, village) == "storage"
+    res = building_system.try_expand_village_buildings(world, village)
+    assert res["building_type"] == "storage"
+    assert res["success"] is True
+    site = world.buildings[str(res["building_id"])]
+    site["construction_last_demand_tick"] = 0
+    site["construction_progress"] = 0
+    site["construction_buffer"] = {"wood": 0, "stone": 0, "food": 0}
+    site["construction_request"] = {
+        "wood_needed": HOUSE_WOOD_COST,
+        "stone_needed": HOUSE_STONE_COST,
+        "food_needed": 0,
+        "wood_reserved": 0,
+        "stone_reserved": 0,
+        "food_reserved": 0,
+    }
+    world.tick = 500
+    building_system.clear_stale_construction_sites(world, stale_ticks=50)
+    snap = world.compute_settlement_progression_snapshot()
+    assert int(snap["surplus_triggered_storage_attempts"]) >= 1
+    assert int(snap["surplus_storage_abandoned"]) >= 1
 
 
 def test_serialized_buildings_include_construction_logistics_fields() -> None:

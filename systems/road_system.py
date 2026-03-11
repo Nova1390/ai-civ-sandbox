@@ -214,8 +214,8 @@ def _village_hub_node(world, village: Dict, village_buildings: List[Dict]) -> Op
     return _prefer_existing_road_node(world, candidates)
 
 
-def _important_target_nodes(world, village: Dict, village_buildings: List[Dict]) -> List[Tuple[int, Coord]]:
-    targets: List[Tuple[int, Coord]] = []
+def _important_target_nodes(world, village: Dict, village_buildings: List[Dict]) -> List[Tuple[int, Coord, str]]:
+    targets: List[Tuple[int, Coord, str]] = []
 
     for building in village_buildings:
         metadata = building_system.get_building_metadata(str(building.get("type", ""))) or {}
@@ -235,7 +235,18 @@ def _important_target_nodes(world, village: Dict, village_buildings: List[Dict])
         node = _prefer_existing_road_node(world, candidates)
         if node is not None:
             prio, _ = _building_priority(building)
-            targets.append((prio, node))
+            reason = "building_access"
+            if requires_road:
+                reason = "requires_road"
+            elif str(building.get("operational_state", "")) == "under_construction":
+                reason = "construction_access"
+            elif category == "food_storage":
+                reason = "storage_access"
+            elif str(building.get("type", "")) == "house":
+                reason = "residential_access"
+            elif category == "production":
+                reason = "production_access"
+            targets.append((prio, node, reason))
 
     farm_zone = village.get("farm_zone_center")
     if isinstance(farm_zone, dict):
@@ -245,10 +256,10 @@ def _important_target_nodes(world, village: Dict, village_buildings: List[Dict])
             candidates = _anchor_road_candidates_for_point(world, fx, fy)
             node = _prefer_existing_road_node(world, candidates)
             if node is not None:
-                targets.append((2, node))
+                targets.append((2, node, "farm_zone_access"))
 
-    targets = sorted(targets, key=lambda item: (item[0], _coord_key(item[1])))
-    dedup: List[Tuple[int, Coord]] = []
+    targets = sorted(targets, key=lambda item: (item[0], _coord_key(item[1]), item[2]))
+    dedup: List[Tuple[int, Coord, str]] = []
     seen = set()
     for item in targets:
         if item[1] in seen:
@@ -256,6 +267,74 @@ def _important_target_nodes(world, village: Dict, village_buildings: List[Dict])
         seen.add(item[1])
         dedup.append(item)
     return dedup
+
+
+def _village_has_under_construction_sites(world, village: Dict) -> bool:
+    vid = village.get("id")
+    vuid = str(village.get("village_uid", "") or "")
+    for building in getattr(world, "buildings", {}).values():
+        if not isinstance(building, dict):
+            continue
+        if str(building.get("operational_state", "")) != "under_construction":
+            continue
+        if vid is not None and building.get("village_id") == vid:
+            return True
+        if vuid and str(building.get("village_uid", "") or "") == vuid:
+            return True
+    return False
+
+
+def _road_connection_has_local_purpose(
+    world,
+    village: Dict,
+    *,
+    target: Coord,
+    path: List[Coord],
+    purpose_hint: str,
+) -> Tuple[bool, str]:
+    span = max(0, len(path) - 1)
+    if span <= 1:
+        return (False, "path_too_short")
+
+    pop = int(village.get("population", 0))
+    houses = int(village.get("houses", 0))
+    has_construction = _village_has_under_construction_sites(world, village)
+    usage_near_target = 0
+    for x in range(target[0] - 2, target[0] + 3):
+        for y in range(target[1] - 2, target[1] + 3):
+            usage_near_target += int(getattr(world, "road_usage", {}).get((x, y), 0))
+    nearby_agents = 0
+    for agent in getattr(world, "agents", []):
+        if not getattr(agent, "alive", False):
+            continue
+        if abs(int(getattr(agent, "x", 0)) - target[0]) + abs(int(getattr(agent, "y", 0)) - target[1]) <= 4:
+            nearby_agents += 1
+
+    if purpose_hint == "requires_road":
+        return (True, "requires_road")
+    if purpose_hint == "construction_access":
+        return (True, "construction_access")
+    if purpose_hint == "farm_zone_access":
+        nearby_farms = 0
+        for (fx, fy), plot in getattr(world, "farm_plots", {}).items():
+            if not isinstance(plot, dict):
+                continue
+            if abs(int(fx) - target[0]) + abs(int(fy) - target[1]) <= 4:
+                nearby_farms += 1
+        if nearby_farms <= 0 and usage_near_target < 3:
+            return (False, "no_farm_activity")
+        return (True, "farm_zone_access")
+
+    if purpose_hint in {"storage_access", "residential_access", "production_access", "building_access"}:
+        if pop >= 4 or houses >= 2 or has_construction:
+            return (True, purpose_hint)
+        if usage_near_target >= 4 or nearby_agents >= 2:
+            return (True, purpose_hint)
+        return (False, "low_local_activity")
+
+    if usage_near_target < 3 and nearby_agents < 2 and not has_construction:
+        return (False, "no_local_activity")
+    return (True, purpose_hint or "logistics_corridor")
 
 
 def _grow_roads_for_village(world, village: Dict, budget: int) -> int:
@@ -277,17 +356,32 @@ def _grow_roads_for_village(world, village: Dict, budget: int) -> int:
     # Connect closest important target to hub first.
     ranked_targets = sorted(
         targets,
-        key=lambda item: (item[0], abs(item[1][0] - hub[0]) + abs(item[1][1] - hub[1]), _coord_key(item[1])),
+        key=lambda item: (item[0], abs(item[1][0] - hub[0]) + abs(item[1][1] - hub[1]), _coord_key(item[1]), item[2]),
     )
 
     added = 0
-    for _, target in ranked_targets:
+    village_uid = str(village.get("village_uid", "") or "")
+    for _, target, purpose_hint in ranked_targets:
         if added >= budget:
             break
         path = _choose_road_path(world, hub, target)
         if path is None:
+            if hasattr(world, "record_road_purpose_decision"):
+                world.record_road_purpose_decision(village_uid=village_uid or None, built=False, reason="path_failed")
+            continue
+        purposeful, purpose_reason = _road_connection_has_local_purpose(
+            world,
+            village,
+            target=target,
+            path=path,
+            purpose_hint=purpose_hint,
+        )
+        if not purposeful:
+            if hasattr(world, "record_road_purpose_decision"):
+                world.record_road_purpose_decision(village_uid=village_uid or None, built=False, reason=purpose_reason)
             continue
 
+        added_for_target = 0
         for x, y in path:
             if added >= budget:
                 break
@@ -297,6 +391,9 @@ def _grow_roads_for_village(world, village: Dict, budget: int) -> int:
             if _is_road_placeable(world, x, y):
                 world.set_transport_type(x, y, "road")
                 added += 1
+                added_for_target += 1
+        if added_for_target > 0 and hasattr(world, "record_road_purpose_decision"):
+            world.record_road_purpose_decision(village_uid=village_uid or None, built=True, reason=purpose_reason)
 
     return added
 

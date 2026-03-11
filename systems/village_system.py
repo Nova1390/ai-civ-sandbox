@@ -143,6 +143,36 @@ def detect_villages(world: "World") -> None:
     visited: Set[Coord] = set()
     villages: List[Dict] = []
     village_id = 1
+    settlement_stats = getattr(world, "settlement_bottleneck_stats", None)
+    if not isinstance(settlement_stats, dict):
+        settlement_stats = {
+            "village_creation_attempts": 0,
+            "village_creation_blocked_count": 0,
+            "village_creation_blocked_reasons": {},
+            "independent_cluster_count": 0,
+            "independent_cluster_support_score_total": 0,
+            "independent_cluster_support_score_samples": 0,
+            "camp_to_village_transition_attempts": 0,
+            "camp_to_village_transition_failures": 0,
+            "camp_to_village_transition_failure_reasons": {},
+            "local_viable_camp_retained_count": 0,
+            "distant_cluster_pull_suppressed_count": 0,
+            "distant_cluster_pull_suppressed_reasons": {},
+            "camp_absorption_events": 0,
+            "camp_absorption_reasons": {},
+            "mature_nucleus_detected_count": 0,
+            "mature_nucleus_failed_transition_count": 0,
+            "mature_nucleus_successful_transition_count": 0,
+            "cluster_ecological_productivity_score_total": 0.0,
+            "cluster_ecological_productivity_score_samples": 0,
+            "cluster_inertia_events": 0,
+            "dominant_cluster_saturation_penalty_applied": 0,
+            "camp_absorption_delay_events": 0,
+            "secondary_cluster_persistence_ticks": 0,
+            "exploration_shift_due_to_low_density": 0,
+        }
+        world.settlement_bottleneck_stats = settlement_stats
+    settlement_stats["independent_cluster_count"] = 0
 
     for start in world.structures:
         if start in visited:
@@ -163,18 +193,80 @@ def detect_villages(world: "World") -> None:
                 if nei not in visited:
                     stack.append(nei)
 
-        if len(cluster) < world.MIN_HOUSES_FOR_VILLAGE:
-            continue
-
+        settlement_stats["independent_cluster_count"] = int(settlement_stats.get("independent_cluster_count", 0)) + 1
+        settlement_stats["village_creation_attempts"] = int(settlement_stats.get("village_creation_attempts", 0)) + 1
         cx = round(sum(x for x, _ in cluster) / len(cluster))
         cy = round(sum(y for _, y in cluster) / len(cluster))
-
         pop = 0
         for a in world.agents:
             if not a.alive:
                 continue
             if abs(a.x - cx) <= 6 and abs(a.y - cy) <= 6:
                 pop += 1
+        camps = getattr(world, "camps", {})
+        nearby_camp = None
+        nearby_camp_dist = 10**9
+        if isinstance(camps, dict):
+            for camp in camps.values():
+                if not isinstance(camp, dict) or not bool(camp.get("active", False)):
+                    continue
+                dist = abs(int(camp.get("x", 0)) - int(cx)) + abs(int(camp.get("y", 0)) - int(cy))
+                if dist <= 8 and dist < nearby_camp_dist:
+                    nearby_camp = camp
+                    nearby_camp_dist = dist
+        active_camp_near = nearby_camp is not None
+        camp_support_score = int(nearby_camp.get("support_score", 0)) if isinstance(nearby_camp, dict) else 0
+        settlement_stats["independent_cluster_support_score_total"] = int(
+            settlement_stats.get("independent_cluster_support_score_total", 0)
+        ) + max(0, camp_support_score)
+        settlement_stats["independent_cluster_support_score_samples"] = int(
+            settlement_stats.get("independent_cluster_support_score_samples", 0)
+        ) + 1
+        mature_nucleus = bool(
+            active_camp_near
+            and int(pop) >= 3
+            and int(camp_support_score) >= 4
+            and len(cluster) >= max(1, int(world.MIN_HOUSES_FOR_VILLAGE) - 1)
+        )
+        if mature_nucleus:
+            settlement_stats["mature_nucleus_detected_count"] = int(
+                settlement_stats.get("mature_nucleus_detected_count", 0)
+            ) + 1
+        required_houses = int(world.MIN_HOUSES_FOR_VILLAGE)
+        if mature_nucleus:
+            # A mature independent nucleus can transition with one fewer house.
+            required_houses = max(2, int(world.MIN_HOUSES_FOR_VILLAGE) - 1)
+
+        if len(cluster) < required_houses:
+            settlement_stats["village_creation_blocked_count"] = int(settlement_stats.get("village_creation_blocked_count", 0)) + 1
+            blocked = settlement_stats.setdefault("village_creation_blocked_reasons", {})
+            blocked["insufficient_houses"] = int(blocked.get("insufficient_houses", 0)) + 1
+            if active_camp_near:
+                settlement_stats["camp_to_village_transition_attempts"] = int(settlement_stats.get("camp_to_village_transition_attempts", 0)) + 1
+                if hasattr(world, "record_secondary_nucleus_event"):
+                    world.record_secondary_nucleus_event("secondary_nucleus_village_attempts")
+                settlement_stats["camp_to_village_transition_failures"] = int(settlement_stats.get("camp_to_village_transition_failures", 0)) + 1
+                fail_reasons = settlement_stats.setdefault("camp_to_village_transition_failure_reasons", {})
+                fail_reason = "insufficient_houses_mature_nucleus" if mature_nucleus else "insufficient_houses"
+                fail_reasons[fail_reason] = int(fail_reasons.get(fail_reason, 0)) + 1
+                if mature_nucleus:
+                    settlement_stats["mature_nucleus_failed_transition_count"] = int(
+                        settlement_stats.get("mature_nucleus_failed_transition_count", 0)
+                    ) + 1
+            continue
+
+        if active_camp_near:
+            settlement_stats["camp_to_village_transition_attempts"] = int(settlement_stats.get("camp_to_village_transition_attempts", 0)) + 1
+            if hasattr(world, "record_secondary_nucleus_event"):
+                world.record_secondary_nucleus_event("secondary_nucleus_village_attempts")
+            if mature_nucleus and len(cluster) < int(world.MIN_HOUSES_FOR_VILLAGE):
+                settlement_stats["mature_nucleus_successful_transition_count"] = int(
+                    settlement_stats.get("mature_nucleus_successful_transition_count", 0)
+                ) + 1
+                if hasattr(world, "record_settlement_bottleneck"):
+                    world.record_settlement_bottleneck("secondary_nucleus_materialization_success")
+                if hasattr(world, "record_secondary_nucleus_event"):
+                    world.record_secondary_nucleus_event("secondary_nucleus_village_successes")
 
         center = (cx, cy)
         previous = _match_previous_village(center, unmatched_old)

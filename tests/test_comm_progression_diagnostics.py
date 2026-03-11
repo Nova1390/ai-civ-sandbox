@@ -206,6 +206,35 @@ def test_rest_target_camp_is_recorded_when_camp_selected() -> None:
     assert int(targeting["global"]["rest_target_camp"]) >= 1
 
 
+def test_familiar_camp_support_bias_records_in_low_medium_density() -> None:
+    world = _flat_world()
+    brain = FoodBrain()
+    agent = Agent(x=3, y=3, brain=brain, is_player=False, player_id=None)
+    friend = Agent(x=10, y=11, brain=brain, is_player=False, player_id=None)
+    agent.task = "rest"
+    agent.hunger = 70
+    world.agents = [agent, friend]
+    world.camps = {
+        "camp-000001": {
+            "camp_id": "camp-000001",
+            "x": 10,
+            "y": 10,
+            "community_id": "pc-000001",
+            "created_tick": 1,
+            "last_active_tick": 1,
+            "active": True,
+            "village_uid": "",
+        }
+    }
+    agent.recent_encounters = {
+        friend.agent_id: {"encounter_count": 6, "last_encounter_tick": 1, "familiarity_score": 0.7}
+    }
+    action = brain.decide(agent, world)
+    assert action and action[0] == "move"
+    social = world.compute_social_encounter_snapshot()
+    assert int(social.get("familiar_camp_support_bias_events", 0)) >= 1
+
+
 def test_observability_includes_comm_diagnostics_fields() -> None:
     world = _flat_world()
     world.agents = [

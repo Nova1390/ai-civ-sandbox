@@ -15,9 +15,16 @@ Coord = Tuple[int, int]
 STORAGE_WOOD_COST = 4
 STORAGE_STONE_COST = 2
 STORAGE_BUILDING_CAPACITY = 250
+HOUSE_DOMESTIC_FOOD_CAPACITY = 4
 STORAGE_REBALANCE_RESERVE = 8
 STORAGE_REBALANCE_MARGIN = 3
 STORAGE_REBALANCE_TRANSFER_CAP = 2
+STORAGE_MATURE_CLUSTER_HOUSES_MIN = 3
+STORAGE_MATURE_CLUSTER_POP_MIN = 6
+STORAGE_MATURE_FLOW_EVENTS_MIN = 6
+STORAGE_MATURE_BUFFER_PRESSURE_MIN = 3
+STORAGE_SURPLUS_FOOD_RATE_MIN = 0.04
+STORAGE_SURPLUS_RESOURCE_RATE_MIN = 0.03
 POLICY_BUILD_COOLDOWN_TICKS = 60
 POLICY_MAX_ATTEMPTS_PER_WINDOW = 2
 CONSTRUCTION_WORK_RANGE = 1
@@ -1047,6 +1054,8 @@ def deposit_agent_inventory_to_storage(world: "World", agent: "Agent") -> bool:
     storage = _ensure_storage_state(storage_building)
     capacity = int(storage_building.get("storage_capacity", STORAGE_BUILDING_CAPACITY))
     moved = False
+    moved_materials = 0
+    moved_wood_or_stone = 0
     for key in ("food", "wood", "stone"):
         have = int(agent.inventory.get(key, 0))
         if have <= 0:
@@ -1060,9 +1069,19 @@ def deposit_agent_inventory_to_storage(world: "World", agent: "Agent") -> bool:
         storage[key] = int(storage.get(key, 0)) + qty
         agent.inventory[key] = have - qty
         moved = True
+        moved_materials += int(qty)
+        if key in {"wood", "stone"}:
+            moved_wood_or_stone += int(qty)
 
     if moved:
         _sync_village_storage_cache(world, village)
+        if (
+            moved_wood_or_stone > 0
+            and hasattr(world, "has_active_construction_for_agent")
+            and bool(world.has_active_construction_for_agent(agent))
+            and hasattr(world, "record_settlement_progression_metric")
+        ):
+            world.record_settlement_progression_metric("construction_material_delivery_drift_events", int(moved_wood_or_stone))
         if str(getattr(agent, "role", "")) == "hauler" and hasattr(world, "record_task_completion_preconditions_met"):
             world.record_task_completion_preconditions_met(agent, "deposit_to_storage")
             world.record_task_completion_productive(agent, "deposit_to_storage")
@@ -1868,6 +1887,9 @@ def place_building(
                     building["storage"]["food"] = int(legacy.get("food", 0))
                     building["storage"]["wood"] = int(legacy.get("wood", 0))
                     building["storage"]["stone"] = int(legacy.get("stone", 0))
+    elif building_type == "house":
+        building["domestic_food"] = int(building.get("domestic_food", 0))
+        building["domestic_food_capacity"] = int(building.get("domestic_food_capacity", HOUSE_DOMESTIC_FOOD_CAPACITY))
 
     world.buildings[building_id] = building
     for tile in tiles:
@@ -1881,10 +1903,14 @@ def place_building(
             "house_activated_via_direct_path",
             village_uid=str(village_uid or _resolve_village_uid(world, village_for_readiness) or ""),
         )
+        if hasattr(world, "record_settlement_progression_build_event"):
+            world.record_settlement_progression_build_event("house", building)
     elif building_type == "storage" and building.get("operational_state") == "active":
         world.storage_buildings.add(origin)
         if village_for_readiness is not None:
             _sync_village_storage_cache(world, village_for_readiness)
+        if hasattr(world, "record_settlement_progression_build_event"):
+            world.record_settlement_progression_build_event("storage", building)
 
     return building
 
@@ -1892,20 +1918,136 @@ def place_building(
 def _find_nearest_storage_spot(world: "World", village: dict, origin: Coord) -> Optional[Coord]:
     cx = village.get("center", {}).get("x", origin[0])
     cy = village.get("center", {}).get("y", origin[1])
+    preferred_anchors: List[Coord] = [(int(cx), int(cy))]
+    houses = [
+        b
+        for b in getattr(world, "buildings", {}).values()
+        if isinstance(b, dict)
+        and str(b.get("type", "")) == "house"
+        and str(b.get("operational_state", "")) == "active"
+        and (b.get("village_id") == village.get("id") or str(b.get("village_uid", "")) == str(village.get("village_uid", "")))
+    ]
+    if len(houses) >= 2:
+        hx = int(round(sum(int(h.get("x", 0)) for h in houses) / float(len(houses))))
+        hy = int(round(sum(int(h.get("y", 0)) for h in houses) / float(len(houses))))
+        preferred_anchors.insert(0, (hx, hy))
+    if hasattr(world, "_nearest_active_camp_raw"):
+        try:
+            camp = world._nearest_active_camp_raw(int(cx), int(cy), max_distance=10)  # type: ignore[attr-defined]
+        except Exception:
+            camp = None
+        if isinstance(camp, dict):
+            preferred_anchors.insert(0, (int(camp.get("x", cx)), int(camp.get("y", cy))))
 
     candidates = _enumerate_candidate_positions(
         world,
         "storage",
         village=village,
         agent_pos=origin,
-        preferred_anchors=[(cx, cy)],
+        preferred_anchors=preferred_anchors,
         search_radius=6,
         max_distance_from_agent=10,
     )
     placeable = [pos for pos in candidates if can_place_building(world, "storage", pos)]
     if not placeable:
         return None
-    return find_preferred_build_position(world, village, "storage", placeable)
+    if not getattr(world, "agents", None):
+        return find_preferred_build_position(world, village, "storage", placeable)
+    # Prefer cohesive local materialization near viable secondary nuclei when available.
+    nearby_agent = min(
+        [a for a in world.agents if getattr(a, "alive", False)],
+        key=lambda a: abs(int(getattr(a, "x", 0)) - int(origin[0])) + abs(int(getattr(a, "y", 0)) - int(origin[1])),
+        default=None,
+    )
+    if nearby_agent is None or not hasattr(world, "secondary_nucleus_build_position_bonus"):
+        return find_preferred_build_position(world, village, "storage", placeable)
+    best_pos: Optional[Coord] = None
+    best_score = -10**9
+    primary_anchor = preferred_anchors[0] if preferred_anchors else (int(cx), int(cy))
+    for pos in sorted(placeable, key=_coord_key):
+        score = score_building_position(world, village, "storage", pos)
+        nearby_houses = count_nearby_houses(world, int(pos[0]), int(pos[1]), radius=6)
+        nearby_people = count_nearby_population(world, int(pos[0]), int(pos[1]), radius=6)
+        score += min(20, int(nearby_houses) * 4)
+        score += min(12, int(nearby_people) * 2)
+        score += max(0, 28 - (_distance(pos, primary_anchor) * 5))
+        try:
+            score += int(world.secondary_nucleus_build_position_bonus(nearby_agent, pos, "storage"))
+        except Exception:
+            pass
+        if score > best_score:
+            best_score = int(score)
+            best_pos = pos
+    return best_pos
+
+
+def _storage_maturity_snapshot(world: "World", village: Dict[str, Any]) -> Dict[str, Any]:
+    center = village.get("center", {}) if isinstance(village.get("center"), dict) else {}
+    cx = int(center.get("x", 0))
+    cy = int(center.get("y", 0))
+    houses = int(village.get("houses", 0))
+    nearby_houses = count_nearby_houses(world, cx, cy, radius=8) if ("x" in center and "y" in center) else houses
+    nearby_population = count_nearby_population(world, cx, cy, radius=7) if ("x" in center and "y" in center) else int(village.get("population", 0))
+    if nearby_population <= 0:
+        nearby_population = int(village.get("population", 0))
+    production = village.get("production_metrics", {}) if isinstance(village.get("production_metrics"), dict) else {}
+    camp_food = getattr(world, "camp_food_stats", {}) if isinstance(getattr(world, "camp_food_stats", {}), dict) else {}
+    flow_events = int(camp_food.get("camp_food_deposits", 0)) + int(camp_food.get("domestic_food_stored_total", 0))
+    flow_events += int(camp_food.get("pressure_backed_food_deliveries", 0))
+    flow_events += int(production.get("total_food_gathered", 0)) // 12
+    buffer_pressure = int(camp_food.get("domestic_storage_full_events", 0)) + int(camp_food.get("camp_food_pressure_ticks", 0)) // 12
+    signals = evaluate_village_unlock_signals(world, village)
+    food_stock = int((village.get("storage", {}) or {}).get("food", 0)) if isinstance(village.get("storage", {}), dict) else 0
+    house_cluster_ready = bool(nearby_houses >= int(STORAGE_MATURE_CLUSTER_HOUSES_MIN))
+    throughput_ready = bool(flow_events >= int(STORAGE_MATURE_FLOW_EVENTS_MIN) or food_stock >= 16)
+    pressure_ready = bool(buffer_pressure >= int(STORAGE_MATURE_BUFFER_PRESSURE_MIN) or bool(signals.get("storage_pressure_high")))
+    support_ready = bool(nearby_population >= int(STORAGE_MATURE_CLUSTER_POP_MIN))
+    surplus_ready = False
+    if hasattr(world, "is_village_surplus_sustained"):
+        try:
+            surplus_ready = bool(world.is_village_surplus_sustained(village))
+        except Exception:
+            surplus_ready = False
+    if not surplus_ready and hasattr(world, "update_village_surplus_state"):
+        try:
+            state = world.update_village_surplus_state(village)
+            food_rate = float(state.get("food_surplus_rate", 0.0))
+            resource_rate = float(state.get("resource_surplus_rate", 0.0))
+            saturation = int(state.get("buffer_saturation_events", 0))
+            surplus_ready = bool(
+                food_rate >= float(STORAGE_SURPLUS_FOOD_RATE_MIN)
+                and resource_rate >= float(STORAGE_SURPLUS_RESOURCE_RATE_MIN)
+                and saturation >= 2
+            )
+        except Exception:
+            surplus_ready = False
+    mature_ready = bool(house_cluster_ready and throughput_ready and pressure_ready and support_ready and surplus_ready)
+    return {
+        "nearby_houses": int(nearby_houses),
+        "nearby_population": int(nearby_population),
+        "flow_events": int(flow_events),
+        "buffer_pressure": int(buffer_pressure),
+        "house_cluster_ready": bool(house_cluster_ready),
+        "throughput_ready": bool(throughput_ready),
+        "pressure_ready": bool(pressure_ready),
+        "support_ready": bool(support_ready),
+        "surplus_ready": bool(surplus_ready),
+        "mature_ready": bool(mature_ready),
+    }
+
+
+def _storage_defer_reason_for_snapshot(snapshot: Dict[str, Any]) -> Optional[str]:
+    if bool(snapshot.get("house_cluster_ready", False)) is False:
+        return "storage_deferred_due_to_low_house_cluster"
+    if bool(snapshot.get("throughput_ready", False)) is False:
+        return "storage_deferred_due_to_low_throughput"
+    if bool(snapshot.get("pressure_ready", False)) is False:
+        return "storage_deferred_due_to_low_buffer_pressure"
+    if bool(snapshot.get("support_ready", False)) is False:
+        return "storage_deferred_due_to_low_throughput"
+    if bool(snapshot.get("surplus_ready", False)) is False:
+        return "storage_deferred_due_to_low_surplus"
+    return None
 
 
 def _get_build_wallet(world: "World", agent: "Agent"):
@@ -2060,6 +2202,8 @@ def _mark_builder_waiting_on_site(world: "World", building: Dict[str, Any], agen
     _mark_construction_site_demand_tick(world, building)
     if hasattr(world, "record_delivery_pipeline_stage"):
         world.record_delivery_pipeline_stage(agent, "delivery_target_created_count", role="builder")
+    if hasattr(world, "record_settlement_progression_metric"):
+        world.record_settlement_progression_metric("construction_progress_stalled_ticks")
 
 
 def _mark_construction_site_demand_tick(world: "World", building: Dict[str, Any]) -> None:
@@ -2087,6 +2231,21 @@ def can_agent_work_on_construction(agent: "Agent", building: Dict[str, Any]) -> 
     bx = int(building.get("x", 0))
     by = int(building.get("y", 0))
     return _distance((int(agent.x), int(agent.y)), (bx, by)) <= int(CONSTRUCTION_WORK_RANGE)
+
+
+def _agent_is_situated_on_site(agent: "Agent", building: Dict[str, Any]) -> bool:
+    if not isinstance(building, dict):
+        return False
+    footprint: List[Coord] = []
+    raw_footprint = building.get("footprint", [])
+    if isinstance(raw_footprint, list):
+        for tile in raw_footprint:
+            if isinstance(tile, dict) and "x" in tile and "y" in tile:
+                footprint.append((int(tile["x"]), int(tile["y"])))
+    if not footprint:
+        footprint.append((int(building.get("x", 0)), int(building.get("y", 0))))
+    ax, ay = int(agent.x), int(agent.y)
+    return any(_distance((ax, ay), (tx, ty)) <= int(CONSTRUCTION_WORK_RANGE) for tx, ty in footprint)
 
 
 def _advance_construction_progress(building: Dict[str, Any], work_amount: int = CONSTRUCTION_WORK_PER_TICK) -> int:
@@ -2394,6 +2553,8 @@ def _complete_construction_site(world: "World", building: Dict[str, Any]) -> Non
             village_uid=village_uid,
             building_id=bid,
         )
+    if hasattr(world, "record_settlement_progression_metric"):
+        world.record_settlement_progression_metric("construction_completion_events")
     building["operational_state"] = "active"
     building.pop("construction_request", None)
     building.pop("construction_buffer", None)
@@ -2420,6 +2581,8 @@ def _complete_construction_site(world: "World", building: Dict[str, Any]) -> Non
         village_id = building.get("village_id")
         village = world.get_village_by_id(village_id) if village_id is not None else None
         _sync_village_storage_cache(world, village)
+        if hasattr(world, "record_settlement_progression_build_event"):
+            world.record_settlement_progression_build_event("storage", building)
 
 
 def _construction_sites_for_village(world: "World", village: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -2496,6 +2659,31 @@ def clear_stale_construction_sites(world: "World", *, stale_ticks: int = CONSTRU
     now = int(getattr(world, "tick", 0))
     timeout = max(1, int(stale_ticks))
     removed = 0
+
+    def _record_abandonment_metrics(b: Dict[str, Any]) -> None:
+        b_type = str(b.get("type", ""))
+        if b_type == "storage" and hasattr(world, "record_settlement_progression_metric"):
+            world.record_settlement_progression_metric("storage_construction_abandoned_count")
+            village = None
+            vid = b.get("village_id")
+            if vid is not None and hasattr(world, "get_village_by_id"):
+                village = world.get_village_by_id(vid)
+            if village is None:
+                vu = str(b.get("village_uid", ""))
+                if vu:
+                    village = next(
+                        (v for v in getattr(world, "villages", []) if str(v.get("village_uid", "")) == vu),
+                        None,
+                    )
+            if hasattr(world, "is_village_surplus_sustained"):
+                try:
+                    if world.is_village_surplus_sustained(village):
+                        world.record_settlement_progression_metric("surplus_storage_abandoned")
+                except Exception:
+                    pass
+        if hasattr(world, "record_settlement_progression_metric"):
+            world.record_settlement_progression_metric("construction_abandonment_events")
+
     for building_id, building in list(getattr(world, "buildings", {}).items()):
         if not isinstance(building, dict):
             continue
@@ -2506,6 +2694,7 @@ def clear_stale_construction_sites(world: "World", *, stale_ticks: int = CONSTRU
 
         village_missing = building.get("village_id") is None and not str(building.get("village_uid", ""))
         if village_missing:
+            _record_abandonment_metrics(building)
             _remove_building_and_occupancy(world, str(building_id))
             removed += 1
             continue
@@ -2526,6 +2715,7 @@ def clear_stale_construction_sites(world: "World", *, stale_ticks: int = CONSTRU
         req = building.get("construction_request", {})
         buf = building.get("construction_buffer", {})
         if not isinstance(req, dict) or not isinstance(buf, dict):
+            _record_abandonment_metrics(building)
             _remove_building_and_occupancy(world, str(building_id))
             removed += 1
             continue
@@ -2534,6 +2724,7 @@ def clear_stale_construction_sites(world: "World", *, stale_ticks: int = CONSTRU
         if progress > 0 or reserved_total > 0 or buffered_total > 0:
             continue
 
+        _record_abandonment_metrics(building)
         _remove_building_and_occupancy(world, str(building_id))
         removed += 1
     return int(removed)
@@ -2611,7 +2802,7 @@ def run_hauler_construction_delivery(world: "World", agent: "Agent") -> bool:
 
     if not target_id or resource_type not in ("wood", "stone", "food") or reserved_amount <= 0:
         sites = _construction_sites_for_village(world, village)
-        candidates: List[Tuple[int, int, int, int, str, str, int]] = []
+        candidates: List[Tuple[int, int, int, int, int, str, str, int]] = []
         storage_totals = get_village_storage_totals(world, village)
         carrying_by_resource = {
             "wood": int(getattr(agent, "inventory", {}).get("wood", 0)),
@@ -2639,9 +2830,21 @@ def run_hauler_construction_delivery(world: "World", agent: "Agent") -> bool:
                 dist = _distance((agent.x, agent.y), (sx, sy))
                 carrying_priority = 0 if carrying > 0 else 1
                 builder_wait_priority = 0 if _site_has_recent_builder_wait_signal(world, site) else 1
+                local_delivery_bonus = 0
+                if hasattr(world, "secondary_nucleus_delivery_priority"):
+                    try:
+                        local_delivery_bonus = int(world.secondary_nucleus_delivery_priority(agent, site))
+                    except Exception:
+                        local_delivery_bonus = 0
+                if hasattr(world, "storage_delivery_priority_bonus"):
+                    try:
+                        local_delivery_bonus += int(world.storage_delivery_priority_bonus(agent, site))
+                    except Exception:
+                        pass
                 candidates.append(
                     (
                         builder_wait_priority,
+                        -int(local_delivery_bonus),
                         carrying_priority,
                         source_dist,
                         dist,
@@ -2653,6 +2856,11 @@ def run_hauler_construction_delivery(world: "World", agent: "Agent") -> bool:
         if candidates:
             _delivery_stage("delivery_target_visible_count", village_uid=village_uid)
         if not candidates:
+            carrying_any = int(getattr(agent, "inventory", {}).get("wood", 0)) + int(getattr(agent, "inventory", {}).get("stone", 0)) + int(
+                getattr(agent, "inventory", {}).get("food", 0)
+            )
+            if carrying_any > 0 and hasattr(world, "record_settlement_progression_metric"):
+                world.record_settlement_progression_metric("construction_material_delivery_drift_events")
             _clear_hauler_delivery(agent)
             fail_reason = "no_delivery_target" if not sites else "no_resource_available"
             _delivery_fail(fail_reason, village_uid=village_uid)
@@ -2665,8 +2873,22 @@ def run_hauler_construction_delivery(world: "World", agent: "Agent") -> bool:
                 else:
                     world.record_workforce_block_reason(agent, "hauler", "no_materials_available")
             return False
-        candidates.sort(key=lambda x: (x[0], x[1], x[2], x[3], x[4], x[5]))
-        _, _, _, _, bid, resource_type, need = candidates[0]
+        candidates.sort(key=lambda x: (x[0], x[1], x[2], x[3], x[4], x[5], x[6]))
+        _, local_bonus_key, _, _, _, bid, resource_type, need = candidates[0]
+        if int(local_bonus_key) < 0 and hasattr(world, "secondary_nucleus_delivery_priority"):
+            try:
+                selected_site = getattr(world, "buildings", {}).get(str(bid))
+                if isinstance(selected_site, dict):
+                    world.secondary_nucleus_delivery_priority(agent, selected_site, record_event=True)
+            except Exception:
+                pass
+        if int(local_bonus_key) < 0 and hasattr(world, "storage_delivery_priority_bonus"):
+            try:
+                selected_site = getattr(world, "buildings", {}).get(str(bid))
+                if isinstance(selected_site, dict):
+                    world.storage_delivery_priority_bonus(agent, selected_site, record_event=True)
+            except Exception:
+                pass
         _delivery_stage("delivery_target_created_count", village_uid=village_uid)
         selected_site = getattr(world, "buildings", {}).get(str(bid))
         is_house_target = isinstance(selected_site, dict) and str(selected_site.get("type", "")) == "house"
@@ -2851,6 +3073,12 @@ def run_hauler_construction_delivery(world: "World", agent: "Agent") -> bool:
             },
         )
     _mark_construction_site_demand_tick(world, site)
+    if hasattr(world, "record_settlement_progression_metric"):
+        world.record_settlement_progression_metric("construction_material_delivery_events", int(fulfilled))
+        if int(site.get("construction_progress", 0)) > 0 or _site_has_recent_builder_wait_signal(world, site):
+            world.record_settlement_progression_metric("construction_material_delivery_to_active_site", int(fulfilled))
+    if str(site.get("type", "")) == "storage" and hasattr(world, "record_settlement_progression_metric"):
+        world.record_settlement_progression_metric("storage_material_delivery_events", int(fulfilled))
     return True
 
 
@@ -3161,6 +3389,7 @@ def try_build_house(world: "World", agent: "Agent") -> bool:
 
             score = building_score(world, x, y)
             score += connected_houses * 8
+            score += min(18, nearby_houses * 4)
             if nearby_houses == 0:
                 score -= 10
 
@@ -3178,6 +3407,22 @@ def try_build_house(world: "World", agent: "Agent") -> bool:
                 # Early mode prefers "good enough" near-center sites.
                 if relaxed:
                     score += max(0, 24 - (_distance((x, y), (cx, cy)) * 3))
+            if hasattr(world, "secondary_nucleus_materialization_signals"):
+                try:
+                    nucleus = world.secondary_nucleus_materialization_signals(x, y)
+                except Exception:
+                    nucleus = {}
+                if isinstance(nucleus, dict) and bool(nucleus.get("has_camp", False)):
+                    camp_pos = nucleus.get("camp_pos", (x, y))
+                    d_camp = abs(int(camp_pos[0]) - int(x)) + abs(int(camp_pos[1]) - int(y))
+                    score += max(0, 24 - d_camp * 3)
+                    if bool(nucleus.get("viable", False)):
+                        score += 6
+            if hasattr(world, "secondary_nucleus_build_position_bonus"):
+                try:
+                    score += int(world.secondary_nucleus_build_position_bonus(agent, (x, y), "house"))
+                except Exception:
+                    pass
 
             _record_housing_siting_stage(world, "house_candidate_passed_all_checks", village_uid=village_uid or None)
             return int(score)
@@ -3300,7 +3545,10 @@ def try_build_house(world: "World", agent: "Agent") -> bool:
             village_uid=village_uid,
             building_id=str(site.get("building_id", "")),
         )
-    if not can_agent_work_on_construction(agent, site):
+    if not _agent_is_situated_on_site(agent, site):
+        if hasattr(world, "record_situated_construction_event"):
+            world.record_situated_construction_event("construction_offsite_blocked_ticks")
+            world.record_situated_construction_event("construction_interrupted_invalid_target")
         _record_housing_failure(world, "site_invalidated", village_uid=village_uid)
         if str(getattr(agent, "role", "")) == "builder" and hasattr(world, "record_task_completion_preconditions_failed"):
             world.record_task_completion_preconditions_failed(agent, "build_house", "site_not_in_range")
@@ -3326,7 +3574,11 @@ def try_build_house(world: "World", agent: "Agent") -> bool:
     if str(getattr(agent, "role", "")) == "builder" and hasattr(world, "record_task_completion_preconditions_met"):
         world.record_task_completion_preconditions_met(agent, "build_house")
         world.record_task_completion_preconditions_met(agent, "construction_progress")
+    if hasattr(world, "record_situated_construction_event"):
+        world.record_situated_construction_event("construction_on_site_work_ticks")
     _advance_construction_progress(site)
+    if hasattr(world, "record_settlement_progression_metric"):
+        world.record_settlement_progression_metric("construction_progress_ticks")
     _record_housing_stage(
         world,
         "house_construction_progress_tick",
@@ -3385,6 +3637,8 @@ def try_build_storage(world: "World", agent: "Agent") -> bool:
     village_id = getattr(agent, "village_id", None)
     village = world.get_village_by_id(village_id)
     if village is None:
+        if hasattr(world, "record_settlement_progression_metric"):
+            world.record_settlement_progression_metric("storage_construction_interrupted_invalid")
         if str(getattr(agent, "role", "")) == "builder" and hasattr(world, "record_task_completion_preconditions_failed"):
             world.record_task_completion_preconditions_failed(agent, "build_storage", "invalid_site_state")
         if str(getattr(agent, "role", "")) == "builder" and hasattr(world, "record_workforce_block_reason"):
@@ -3436,6 +3690,8 @@ def try_build_storage(world: "World", agent: "Agent") -> bool:
         village["storage_pos"] = {"x": sx, "y": sy}
 
     if _distance((int(agent.x), int(agent.y)), (int(sx), int(sy))) > int(CONSTRUCTION_WORK_RANGE):
+        if hasattr(world, "record_settlement_progression_metric"):
+            world.record_settlement_progression_metric("storage_construction_interrupted_invalid")
         if str(getattr(agent, "role", "")) == "builder" and hasattr(world, "record_task_completion_preconditions_failed"):
             world.record_task_completion_preconditions_failed(agent, "build_storage", "site_not_in_range")
         if str(getattr(agent, "role", "")) == "builder" and hasattr(world, "record_workforce_block_reason"):
@@ -3443,6 +3699,8 @@ def try_build_storage(world: "World", agent: "Agent") -> bool:
         return False
 
     if existing_site is None and not can_place_building(world, "storage", (sx, sy)):
+        if hasattr(world, "record_settlement_progression_metric"):
+            world.record_settlement_progression_metric("storage_construction_interrupted_invalid")
         if str(getattr(agent, "role", "")) == "builder" and hasattr(world, "record_task_completion_preconditions_failed"):
             world.record_task_completion_preconditions_failed(agent, "build_storage", "invalid_site_state")
         if str(getattr(agent, "role", "")) == "builder" and hasattr(world, "record_workforce_block_reason"):
@@ -3461,12 +3719,19 @@ def try_build_storage(world: "World", agent: "Agent") -> bool:
             costs=costs,
         )
     if site is None:
+        if hasattr(world, "record_settlement_progression_metric"):
+            world.record_settlement_progression_metric("storage_construction_interrupted_invalid")
         if str(getattr(agent, "role", "")) == "builder" and hasattr(world, "record_task_completion_preconditions_failed"):
             world.record_task_completion_preconditions_failed(agent, "build_storage", "no_construction_site")
         if str(getattr(agent, "role", "")) == "builder" and hasattr(world, "record_workforce_block_reason"):
             world.record_workforce_block_reason(agent, "builder", "no_construction_site")
         return False
-    if not can_agent_work_on_construction(agent, site):
+    if not _agent_is_situated_on_site(agent, site):
+        if hasattr(world, "record_settlement_progression_metric"):
+            world.record_settlement_progression_metric("storage_construction_interrupted_invalid")
+        if hasattr(world, "record_situated_construction_event"):
+            world.record_situated_construction_event("construction_offsite_blocked_ticks")
+            world.record_situated_construction_event("construction_interrupted_invalid_target")
         if str(getattr(agent, "role", "")) == "builder" and hasattr(world, "record_task_completion_preconditions_failed"):
             world.record_task_completion_preconditions_failed(agent, "build_storage", "site_not_in_range")
         if str(getattr(agent, "role", "")) == "builder" and hasattr(world, "record_workforce_block_reason"):
@@ -3486,7 +3751,13 @@ def try_build_storage(world: "World", agent: "Agent") -> bool:
     if str(getattr(agent, "role", "")) == "builder" and hasattr(world, "record_task_completion_preconditions_met"):
         world.record_task_completion_preconditions_met(agent, "build_storage")
         world.record_task_completion_preconditions_met(agent, "construction_progress")
+    if hasattr(world, "record_situated_construction_event"):
+        world.record_situated_construction_event("construction_on_site_work_ticks")
     _advance_construction_progress(site)
+    if hasattr(world, "record_settlement_progression_metric"):
+        world.record_settlement_progression_metric("construction_progress_ticks")
+    if hasattr(world, "record_settlement_progression_metric"):
+        world.record_settlement_progression_metric("storage_construction_progress_ticks")
     _mark_construction_site_demand_tick(world, site)
     if str(getattr(agent, "role", "")) == "builder" and hasattr(world, "record_task_completion_productive"):
         world.record_task_completion_productive(agent, "construction_progress")
@@ -3779,33 +4050,63 @@ def choose_next_building_type_for_village(world: "World", village: Dict[str, Any
     if not recommended and not available:
         return None
 
-    candidates = recommended if recommended else available
+    candidates = sorted(set(list(recommended) + list(available)))
     recommended_set = set(recommended)
     needs = village.get("needs", {}) if isinstance(village.get("needs"), dict) else {}
     signals = evaluate_village_unlock_signals(world, village)
+    houses = int(village.get("houses", 0))
+    population = int(village.get("population", 0))
+    center = village.get("center", {}) if isinstance(village.get("center"), dict) else {}
+    cx = int(center.get("x", 0))
+    cy = int(center.get("y", 0))
+    storage_maturity = _storage_maturity_snapshot(world, village)
+    nearby_houses = int(storage_maturity.get("nearby_houses", 0))
+    camp_signal = None
+    if "x" in center and "y" in center and hasattr(world, "_nearest_active_camp_raw"):
+        try:
+            camp_signal = world._nearest_active_camp_raw(cx, cy, max_distance=8)  # type: ignore[attr-defined]
+        except Exception:
+            camp_signal = None
+    active_camp_near = bool(isinstance(camp_signal, dict))
 
     def rank(building_type: str) -> Tuple[int, int, str]:
         metadata = get_building_metadata(building_type) or {}
         category = str(metadata.get("category", ""))
 
         urgency = 9
-        if building_type == "storage" and (needs.get("need_storage") or signals.get("storage_pressure_high")):
-            urgency = 0
-        elif building_type in {"mine", "lumberyard"} and (
-            signals.get("stone_demand_high") or signals.get("wood_demand_high")
-        ):
-            urgency = 1
-        elif building_type == "house" and signals.get("population_pressure_high"):
-            urgency = 2
+        if building_type == "storage":
+            if bool(storage_maturity.get("mature_ready", False)) and (
+                needs.get("need_storage")
+                or signals.get("storage_pressure_high")
+                or bool(signals.get("food_surplus_high"))
+            ):
+                urgency = 1
+            else:
+                # House-first progression: storage is collective infrastructure, not early materialization.
+                urgency = 8
+        elif building_type in {"mine", "lumberyard"}:
+            if building_type in recommended_set:
+                urgency = 1
+            elif signals.get("stone_demand_high") or signals.get("wood_demand_high"):
+                urgency = 3
+            else:
+                urgency = 6
+        elif building_type == "house":
+            if active_camp_near and nearby_houses < max(3, population // 2):
+                urgency = 0
+            elif signals.get("population_pressure_high"):
+                urgency = 2
+            else:
+                urgency = 4
         elif category == "food_storage":
-            urgency = 3
-        elif category == "production":
-            urgency = 4
-        elif category == "residential":
             urgency = 5
+        elif category == "production":
+            urgency = 6
+        elif category == "residential":
+            urgency = 4
 
         recommended_bias = 0 if building_type in recommended_set else 1
-        return (recommended_bias, urgency, building_type)
+        return (urgency, recommended_bias, building_type)
 
     ordered = sorted(candidates, key=rank)
     selected = ordered[0]
@@ -3837,6 +4138,25 @@ def try_expand_village_buildings(world: "World", village: Dict[str, Any]) -> Dic
             "building_id": None,
             "position": None,
         }
+
+    if building_type == "storage":
+        if hasattr(world, "record_settlement_progression_metric"):
+            world.record_settlement_progression_metric("storage_emergence_attempts")
+        storage_maturity = _storage_maturity_snapshot(world, village)
+        if bool(storage_maturity.get("surplus_ready", False)) and hasattr(world, "record_settlement_progression_metric"):
+            world.record_settlement_progression_metric("surplus_triggered_storage_attempts")
+        defer_reason = _storage_defer_reason_for_snapshot(storage_maturity)
+        if defer_reason is not None:
+            if hasattr(world, "record_settlement_progression_metric"):
+                world.record_settlement_progression_metric(defer_reason)
+            record_policy_build_attempt(world, village, success=False)
+            return {
+                "success": False,
+                "reason": str(defer_reason),
+                "building_type": building_type,
+                "building_id": None,
+                "position": None,
+            }
 
     village_id = _village_id(village)
     village_uid = _village_uid(village)

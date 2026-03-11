@@ -7,384 +7,717 @@
 <link rel="icon" href="data:," />
 <style>
   :root {
-    --bg: #0f1418;
-    --panel: #172028;
-    --panel-2: #1d2933;
-    --text: #d7e1e8;
-    --muted: #94a4b1;
-    --ok: #7dd38b;
-    --bad: #f08a8a;
-    --accent: #6dc6ff;
-    --border: #2b3b47;
+    --bg: #0a0f14;
+    --bg-2: #0e151d;
+    --card: #121c26;
+    --card-2: #172432;
+    --line: #253646;
+    --text: #d9e5ef;
+    --muted: #8ea1b3;
+    --accent: #4dc2ff;
+    --good: #64d491;
+    --bad: #ff7f8b;
+    --warn: #f4c86a;
+    --radius: 14px;
+    --shadow: 0 10px 28px rgba(0, 0, 0, 0.34);
   }
 
   * { box-sizing: border-box; }
 
   body {
     margin: 0;
-    font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    background: radial-gradient(circle at 0% 0%, #18222b 0%, var(--bg) 42%, #0b1014 100%);
+    min-height: 100vh;
+    background: radial-gradient(circle at 0% -20%, #1b2a3c 0%, var(--bg) 36%, #070b10 100%);
     color: var(--text);
+    font-family: "Inter", "Segoe UI", "SF Pro Text", -apple-system, sans-serif;
+    letter-spacing: 0.01em;
   }
 
-  .app {
+  .dashboard {
     display: grid;
-    grid-template-columns: 1fr 420px;
-    gap: 12px;
+    grid-template-rows: auto auto 1fr;
+    gap: 10px;
     min-height: 100vh;
     padding: 12px;
   }
 
-  .left,
-  .right {
+  .card {
+    background: linear-gradient(180deg, var(--card) 0%, #101923 100%);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+  }
+
+  .topbar {
+    display: grid;
+    grid-template-columns: 210px 1fr;
+    gap: 10px;
+    padding: 10px;
+    align-items: center;
+  }
+
+  .brand {
+    padding: 10px;
+    border-radius: 10px;
+    background: linear-gradient(180deg, #1a2c3a 0%, #142230 100%);
+    border: 1px solid #30506a;
+  }
+
+  .brand h1 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 650;
+    letter-spacing: 0.02em;
+  }
+
+  .brand p {
+    margin: 4px 0 0;
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  .toolbar {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(180px, 1fr));
+    gap: 8px;
+  }
+
+  .cluster {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px;
+    border: 1px solid #2a3f51;
+    border-radius: 10px;
+    background: linear-gradient(180deg, #15202c 0%, #121a25 100%);
+    min-height: 46px;
+  }
+
+  .cluster b {
+    font-size: 11px;
+    color: #9eb2c2;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-right: 2px;
+    white-space: nowrap;
+  }
+
+  input,
+  select,
+  button {
+    font: inherit;
+    font-size: 12px;
+    color: var(--text);
+    border-radius: 8px;
+    border: 1px solid #304557;
+    background: #0d151d;
+    padding: 7px 9px;
+  }
+
+  button {
+    background: linear-gradient(180deg, #1e3140 0%, #1a2835 100%);
+    cursor: pointer;
+    transition: border-color 120ms ease, transform 120ms ease;
+  }
+
+  button:hover {
+    border-color: var(--accent);
+    transform: translateY(-1px);
+  }
+
+  #apiBaseInput {
+    min-width: 220px;
+    flex: 1;
+  }
+
+  #followBtn {
+    min-width: 150px;
+  }
+
+  .status-strip {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(120px, 1fr));
+    gap: 8px;
+    padding: 8px;
+  }
+
+  .status-tile {
+    border: 1px solid #2a3f51;
+    border-radius: 10px;
+    padding: 7px 9px;
+    background: linear-gradient(180deg, #15202b 0%, #101823 100%);
+  }
+
+  .status-k {
+    font-size: 10px;
+    text-transform: uppercase;
+    color: var(--muted);
+    letter-spacing: 0.08em;
+    margin-bottom: 2px;
+  }
+
+  .status-v {
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .ok { color: var(--good); }
+  .bad { color: var(--bad); }
+
+  .content {
+    display: grid;
+    grid-template-columns: 1fr 420px;
+    gap: 10px;
+    min-height: 0;
+  }
+
+  .map-column,
+  .side-column {
     display: flex;
     flex-direction: column;
     gap: 10px;
     min-height: 0;
   }
 
-  .panel {
-    border: 1px solid var(--border);
-    background: linear-gradient(180deg, var(--panel) 0%, #121a20 100%);
-    border-radius: 10px;
+  .world-card {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    flex: 1;
     padding: 10px;
-  }
-
-  .status-bar {
-    padding: 8px 10px;
-    font-size: 12px;
-    display: flex;
-    gap: 12px;
-    flex-wrap: wrap;
-    align-items: center;
-    border-color: #355062;
-    background: linear-gradient(180deg, #1a2a35 0%, #132029 100%);
-  }
-
-  .toolbar {
-    display: flex;
-    flex-wrap: wrap;
     gap: 8px;
+  }
+
+  .card-head {
+    display: flex;
+    justify-content: space-between;
     align-items: center;
+    gap: 10px;
   }
 
-  .toolbar label,
-  .toolbar span,
-  .toolbar button,
-  .toolbar input,
-  .toolbar select {
+  .card-head h3 {
+    margin: 0;
     font-size: 13px;
-  }
-
-  .toolbar input,
-  .toolbar select {
-    background: #0f171d;
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 5px 8px;
-  }
-
-  .toolbar button {
-    background: #23303a;
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 6px 9px;
-    cursor: pointer;
-  }
-
-  .toolbar button:hover { border-color: var(--accent); }
-
-  .map-wrap {
-    position: relative;
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    overflow: hidden;
-    background: #0b1014;
-    width: 100%;
-    height: calc(100vh - 126px);
-    min-height: 520px;
-  }
-
-  canvas#world {
-    display: block;
-    width: 100%;
-    height: 100%;
-    image-rendering: pixelated;
-    cursor: crosshair;
-  }
-
-  .status-grid,
-  .summary-grid,
-  .infra-grid,
-  .civ-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 4px 8px;
-    font-size: 12px;
-  }
-
-  .kv-k { color: var(--muted); }
-  .ok { color: var(--ok); }
-  .bad { color: var(--bad); }
-
-  .section-title {
-    margin: 0 0 6px 0;
-    font-size: 12px;
-    letter-spacing: 0.04em;
     text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #afc1cf;
+  }
+
+  .hint {
+    font-size: 11px;
     color: var(--muted);
   }
 
-  .toggles {
+  .map-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 12px;
+    border: 1px solid #31495f;
+    overflow: hidden;
+    background: #0b1014;
+    flex: 1;
+    min-height: 480px;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+  }
+
+  #world {
+    display: block;
+    width: auto;
+    height: auto;
+    max-width: 100%;
+    max-height: 100%;
+    image-rendering: pixelated;
+    cursor: crosshair;
+    border-radius: 10px;
+  }
+
+  .subgrid {
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    gap: 10px;
+  }
+
+  .mini-card,
+  .aux-card,
+  .compact-card {
+    padding: 10px;
+  }
+
+  #minimap {
+    width: 100%;
+    height: auto;
+    border-radius: 10px;
+    border: 1px solid #355068;
+    background: #0b1014;
+    image-rendering: pixelated;
+  }
+
+  .quick-stats {
+    margin-top: 8px;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .stat {
+    border: 1px solid #2a3f51;
+    background: linear-gradient(180deg, #182533 0%, #121d28 100%);
+    border-radius: 10px;
+    padding: 8px;
+  }
+
+  .stat .k {
+    font-size: 10px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+  }
+
+  .stat .v {
+    margin-top: 2px;
+    font-size: 16px;
+    font-weight: 700;
+  }
+
+  .compact-card {
     display: grid;
     grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .panel-title {
+    margin: 0 0 8px;
+    font-size: 12px;
+    color: #aac0d1;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+
+  .legend-grid {
+    display: grid;
+    gap: 8px;
+  }
+
+  .legend-group {
+    border: 1px solid #294051;
+    border-radius: 10px;
+    padding: 7px;
+    background: #0f1721;
+  }
+
+  .legend-group b {
+    display: block;
+    font-size: 11px;
+    margin-bottom: 5px;
+    color: #c4d6e3;
+  }
+
+  .legend-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    padding: 4px 7px;
+    border-radius: 999px;
+    border: 1px solid #324a5e;
+    background: #0e1620;
+    color: #d4e0ea;
+    white-space: nowrap;
+  }
+
+  .dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 2px;
+    border: 1px solid #1d2a35;
+    flex: 0 0 9px;
+  }
+
+  .toggle-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 6px;
   }
 
   .toggle-item {
-    font-size: 12px;
-    display: flex;
+    display: inline-flex;
     align-items: center;
     gap: 6px;
+    font-size: 12px;
+    border: 1px solid #2a3f50;
+    border-radius: 8px;
+    padding: 5px 7px;
+    background: #0e1821;
+  }
+
+  .toggle-item input { margin: 0; }
+
+  .side-column .card {
+    padding: 10px;
+  }
+
+  .inspector-main {
+    flex: 1;
+    min-height: 240px;
+    overflow: auto;
+  }
+
+  .inspector {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    font-size: 12px;
+    color: #d2dde5;
+  }
+
+  .inspect-group {
+    border: 1px solid #2a3a46;
+    border-radius: 10px;
+    padding: 8px;
+    background: linear-gradient(180deg, #121d27 0%, #0f1821 100%);
+  }
+
+  .inspect-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #9fb2c0;
+    margin-bottom: 6px;
+  }
+
+  .inspect-row {
+    display: grid;
+    grid-template-columns: 120px 1fr;
+    gap: 8px;
+    margin: 3px 0;
+  }
+
+  .inspect-key {
+    color: #8ea3b2;
+    font-size: 11px;
+  }
+
+  .inspect-val {
+    color: #d8e3ea;
+    overflow-wrap: anywhere;
+    font-weight: 550;
+  }
+
+  .inspect-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 7px;
+    border-radius: 999px;
+    border: 1px solid #395063;
+    background: #101a24;
+    font-size: 11px;
+    font-weight: 600;
+    color: #cce0ee;
+    max-width: 100%;
+  }
+
+  .inspect-badge--yes {
+    border-color: #2f7250;
+    background: #113223;
+    color: #89dfb3;
+  }
+
+  .inspect-badge--no {
+    border-color: #7a3a46;
+    background: #32171d;
+    color: #ff9ea9;
+  }
+
+  .inspect-badge--value {
+    border-color: #3f5d74;
+    background: #122231;
+    color: #b9dcf4;
+  }
+
+  .inspect-sublist {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 4px;
+  }
+
+  .inspect-item {
+    border: 1px solid #2b3e4b;
+    border-radius: 8px;
+    padding: 6px;
+    background: #0f171d;
+  }
+
+  .mono {
+    font-family: ui-monospace, Menlo, Monaco, Consolas, monospace;
+  }
+
+  .kv-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 5px 8px;
+    font-size: 12px;
+  }
+
+  .kv-k {
+    color: var(--muted);
+    overflow-wrap: anywhere;
   }
 
   .list {
-    max-height: 200px;
+    max-height: 188px;
     overflow: auto;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: #10171d;
+    border: 1px solid #2a3f50;
+    border-radius: 10px;
+    background: #0f1720;
   }
 
   .list-item {
     font-size: 12px;
     padding: 7px 8px;
-    border-bottom: 1px solid #22313d;
+    border-bottom: 1px solid #213240;
     cursor: pointer;
   }
 
   .list-item:last-child { border-bottom: 0; }
-  .list-item:hover { background: #1a242c; }
-  .list-item.selected { background: #203544; border-left: 3px solid var(--accent); }
+  .list-item:hover { background: #192632; }
+  .list-item.selected { background: #23384a; border-left: 3px solid var(--accent); }
 
-  .mono {
-    white-space: pre-wrap;
-    font-family: ui-monospace, Menlo, Monaco, Consolas, monospace;
-    font-size: 12px;
-    line-height: 1.35;
-    color: #c6d4df;
-  }
-
-  .small { font-size: 12px; color: var(--muted); }
-
-  .legend {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-  }
-
-  .legend-group {
-    border: 1px solid #243440;
-    border-radius: 8px;
-    padding: 8px;
-    background: #101820;
-  }
-
-  .legend-group b {
-    display: block;
+  .small {
+    font-size: 11px;
+    color: var(--muted);
     margin-bottom: 6px;
-    color: #cfe0ea;
-    font-size: 12px;
-    letter-spacing: 0.02em;
   }
 
-  .legend-row {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    font-size: 12px;
-    margin: 3px 0;
+  @media (max-width: 1500px) {
+    .toolbar { grid-template-columns: repeat(2, minmax(220px, 1fr)); }
   }
 
-  .box {
-    display: inline-block;
-    width: 12px;
-    height: 12px;
-    border: 1px solid #1e2a34;
-    border-radius: 2px;
-    flex: 0 0 12px;
+  @media (max-width: 1180px) {
+    .content { grid-template-columns: 1fr; }
+    .side-column { order: 2; }
+    .map-column { order: 1; }
+    .subgrid { grid-template-columns: 1fr; }
+    .compact-card { grid-template-columns: 1fr; }
   }
 
-  @media (max-width: 1100px) {
-    .app { grid-template-columns: 1fr; }
-    .map-wrap { height: 60vh; min-height: 420px; }
+  @media (max-width: 900px) {
+    .topbar { grid-template-columns: 1fr; }
+    .status-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .toolbar { grid-template-columns: 1fr; }
+    .quick-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .map-wrap { min-height: 420px; }
   }
 </style>
 </head>
 <body>
-  <div class="app">
-    <div class="left">
-      <div class="panel toolbar">
-        <label for="apiBaseInput">API</label>
-        <input id="apiBaseInput" type="text" placeholder="default: same origin" style="min-width: 260px;" />
-        <button id="applyApiBtn" type="button">Apply API</button>
-
-        <button id="refreshBtn" type="button">Refresh /state</button>
-        <button id="reloadStaticBtn" type="button">Reload /state/static</button>
-
-        <label for="pollMsSelect">Poll</label>
-        <select id="pollMsSelect">
-          <option value="200">200ms</option>
-          <option value="300" selected>300ms</option>
-          <option value="400">400ms</option>
-          <option value="500">500ms</option>
-        </select>
-
-        <button id="zoomOutBtn" type="button">-</button>
-        <button id="zoomInBtn" type="button">+</button>
-        <button id="followBtn" type="button">Follow Player: OFF</button>
-        <span class="small">Click map = inspect tile</span>
+  <div class="dashboard">
+    <header class="card topbar">
+      <div class="brand">
+        <h1>AI-CIV Observer Dashboard</h1>
+        <p>Read-only simulation monitor • click map to inspect tile</p>
       </div>
 
-      <div id="statusBar" class="panel status-bar">
-        <span>status: booting</span>
-      </div>
-
-      <div class="map-wrap">
-        <canvas id="world" width="1200" height="800"></canvas>
-      </div>
-    </div>
-
-    <div class="right">
-      <div class="panel">
-        <h3 class="section-title">Minimap</h3>
-        <canvas id="minimap" width="360" height="180" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;image-rendering:pixelated;background:#0b1014;"></canvas>
-      </div>
-
-      <div class="panel">
-        <h3 class="section-title">Legend</h3>
-        <div class="legend">
-          <div class="legend-group">
-            <b>Agents</b>
-            <div class="legend-row"><span class="box" style="background:#ff6464"></span>Player</div>
-            <div class="legend-row"><span class="box" style="background:#63b7ff"></span>NPC</div>
-            <div class="legend-row"><span class="box" style="background:#ffd166;border-radius:50%"></span>Leader marker</div>
-          </div>
-
-          <div class="legend-group">
-            <b>Village Markers</b>
-            <div class="legend-row"><span class="box" style="background:#ffd46a"></span>Village center</div>
-            <div class="legend-row"><span class="box" style="background:#f0cf6e;border-radius:50%"></span>Farm zone center</div>
-            <div class="legend-row"><span class="box" style="background:rgba(255,212,106,0.35)"></span>Village territory overlay</div>
-          </div>
-
-          <div class="legend-group">
-            <b>Terrain</b>
-            <div class="legend-row"><span class="box" style="background:#6fcf6a"></span>Grass (G)</div>
-            <div class="legend-row"><span class="box" style="background:#2f8f45"></span>Forest (F)</div>
-            <div class="legend-row"><span class="box" style="background:#8d9196"></span>Mountain (M)</div>
-            <div class="legend-row"><span class="box" style="background:#4da6ff"></span>Water (W)</div>
-            <div class="legend-row"><span class="box" style="background:#b3986a"></span>Hill (H)</div>
-          </div>
-
-          <div class="legend-group">
-            <b>Resources</b>
-            <div class="legend-row"><span class="box" style="background:#19b231;border-radius:50%"></span>Food node</div>
-            <div class="legend-row"><span class="box" style="background:#1f4c2b"></span>Wood node</div>
-            <div class="legend-row"><span class="box" style="background:#d0d4da"></span>Stone node</div>
-          </div>
-
-          <div class="legend-group">
-            <b>Infrastructure</b>
-            <div class="legend-row"><span class="box" style="background:#c2a27a"></span>Road</div>
-          </div>
-
-          <div class="legend-group">
-            <b>Buildings</b>
-            <div class="legend-row"><span class="box" style="background:#8d6b3f"></span>House</div>
-            <div class="legend-row"><span class="box" style="background:#6f5b4d"></span>Storage building</div>
-            <div class="legend-row"><span class="box" style="background:#5d6f83"></span>Mine</div>
-            <div class="legend-row"><span class="box" style="background:#4f6846"></span>Lumberyard</div>
-            <div class="legend-row"><span class="box" style="background:#6f7f8a"></span>Other canonical building</div>
-          </div>
-
-          <div class="legend-group">
-            <b>Farming</b>
-            <div class="legend-row"><span class="box" style="background:#b38b5a"></span>Farm prepared</div>
-            <div class="legend-row"><span class="box" style="background:#4f7f35"></span>Farm planted</div>
-            <div class="legend-row"><span class="box" style="background:#4caf50"></span>Farm growing</div>
-            <div class="legend-row"><span class="box" style="background:#e3be2b"></span>Farm ripe</div>
-            <div class="legend-row"><span class="box" style="background:#5d3c32"></span>Farm dead</div>
-          </div>
-
-          <div class="legend-group">
-            <b>Controls</b>
-            <div class="legend-row">Mouse drag = move camera</div>
-            <div class="legend-row">Wheel = zoom</div>
-            <div class="legend-row">WASD / Arrows = move camera</div>
-            <div class="legend-row">Minimap click = jump camera</div>
-            <div class="legend-row">F = toggle follow player</div>
-          </div>
+      <div class="toolbar">
+        <div class="cluster">
+          <b>API</b>
+          <input id="apiBaseInput" type="text" placeholder="default: same origin" />
+          <button id="applyApiBtn" type="button">Apply</button>
         </div>
-      </div>
 
-      <div class="panel">
-        <h3 class="section-title">Connection</h3>
-        <div id="connectionPanel" class="status-grid"></div>
-      </div>
+        <div class="cluster">
+          <b>Data</b>
+          <button id="refreshBtn" type="button">Refresh /state</button>
+          <button id="reloadStaticBtn" type="button">Reload static</button>
+        </div>
 
-      <div class="panel">
-        <h3 class="section-title">Layers</h3>
-        <div id="layerToggles" class="toggles"></div>
-      </div>
-
-      <div class="panel">
-        <h3 class="section-title">Global Summary</h3>
-        <div id="summaryPanel" class="summary-grid"></div>
-      </div>
-
-      <div class="panel">
-        <h3 class="section-title">Infrastructure</h3>
-        <div id="infraPanel" class="infra-grid"></div>
-      </div>
-
-      <div class="panel">
-        <h3 class="section-title">Civilization Stats</h3>
-        <div id="civStatsPanel" class="civ-grid"></div>
-      </div>
-
-      <div class="panel">
-        <h3 class="section-title">Villages</h3>
-        <div class="small" id="villagesMeta"></div>
-        <div id="villageList" class="list"></div>
-      </div>
-
-      <div class="panel">
-        <h3 class="section-title">Agents</h3>
-        <div class="toolbar" style="padding:0;">
-          <input id="agentFilterInput" type="text" placeholder="filter by id/role/task" style="flex:1; min-width: 0;" />
-          <select id="agentCapSelect">
-            <option value="100" selected>100</option>
-            <option value="250">250</option>
-            <option value="500">500</option>
+        <div class="cluster">
+          <b>Polling</b>
+          <select id="pollMsSelect">
+            <option value="200">200ms</option>
+            <option value="300" selected>300ms</option>
+            <option value="400">400ms</option>
+            <option value="500">500ms</option>
           </select>
+          <span class="chip">live</span>
         </div>
-        <div class="small" id="agentsMeta"></div>
-        <div id="agentList" class="list"></div>
-      </div>
 
-      <div class="panel">
-        <h3 class="section-title">Hover Tile</h3>
-        <div id="hoverPanel" class="mono">-</div>
+        <div class="cluster">
+          <b>View</b>
+          <button id="zoomOutBtn" type="button">-</button>
+          <button id="zoomInBtn" type="button">+</button>
+          <button id="followBtn" type="button">Follow Player: OFF</button>
+        </div>
       </div>
+    </header>
 
-      <div class="panel">
-        <h3 class="section-title">Selection Inspector</h3>
-        <div id="selectionPanel" class="mono">-</div>
-      </div>
-    </div>
+    <section id="statusBar" class="card status-strip">
+      <div class="status-tile"><div class="status-k">Status</div><div class="status-v">booting</div></div>
+    </section>
+
+    <main class="content">
+      <section class="map-column">
+        <div class="card world-card">
+          <div class="card-head">
+            <h3>World Canvas</h3>
+            <span class="hint">Mouse drag: pan • Wheel: zoom • WASD/Arrows: move • F: follow player</span>
+          </div>
+          <div class="map-wrap">
+            <canvas id="world" width="1200" height="800"></canvas>
+          </div>
+        </div>
+
+        <div class="subgrid">
+          <div class="card mini-card">
+            <h3 class="panel-title">Minimap</h3>
+            <canvas id="minimap" width="360" height="180"></canvas>
+
+            <div class="quick-stats">
+              <div class="stat"><div class="k">Tick</div><div id="qsTick" class="v">-</div></div>
+              <div class="stat"><div class="k">Population</div><div id="qsPopulation" class="v">-</div></div>
+              <div class="stat"><div class="k">Villages</div><div id="qsVillages" class="v">-</div></div>
+              <div class="stat"><div class="k">Farms</div><div id="qsFarms" class="v">-</div></div>
+              <div class="stat"><div class="k">Houses</div><div id="qsHouses" class="v">-</div></div>
+              <div class="stat"><div class="k">Agents</div><div id="qsAgents" class="v">-</div></div>
+            </div>
+          </div>
+
+          <div class="card compact-card">
+            <div>
+              <h3 class="panel-title">Legend</h3>
+              <div class="legend-grid">
+                <div class="legend-group">
+                  <b>Terrain</b>
+                  <div class="legend-list">
+                    <span class="chip"><span class="dot" style="background:#6fcf6a"></span>G Grass</span>
+                    <span class="chip"><span class="dot" style="background:#2f8f45"></span>F Forest</span>
+                    <span class="chip"><span class="dot" style="background:#8d9196"></span>M Mountain</span>
+                    <span class="chip"><span class="dot" style="background:#4da6ff"></span>W Water</span>
+                    <span class="chip"><span class="dot" style="background:#b3986a"></span>H Hill</span>
+                  </div>
+                </div>
+
+                <div class="legend-group">
+                  <b>Entities</b>
+                  <div class="legend-list">
+                    <span class="chip"><span class="dot" style="background:#ff6464"></span>Player</span>
+                    <span class="chip"><span class="dot" style="background:#63b7ff"></span>NPC</span>
+                    <span class="chip"><span class="dot" style="background:#ffd166;border-radius:50%"></span>Leader</span>
+                    <span class="chip"><span class="dot" style="background:#ffd46a"></span>Village center</span>
+                    <span class="chip"><span class="dot" style="background:#f0cf6e;border-radius:50%"></span>Farm zone</span>
+                    <span class="chip"><span class="dot" style="background:rgba(255,212,106,0.4)"></span>Territory</span>
+                  </div>
+                </div>
+
+                <div class="legend-group">
+                  <b>Resources & Build</b>
+                  <div class="legend-list">
+                    <span class="chip"><span class="dot" style="background:#19b231;border-radius:50%"></span>Food</span>
+                    <span class="chip"><span class="dot" style="background:#1f4c2b"></span>Wood</span>
+                    <span class="chip"><span class="dot" style="background:#d0d4da"></span>Stone</span>
+                    <span class="chip"><span class="dot" style="background:#c2a27a"></span>Road</span>
+                    <span class="chip"><span class="dot" style="background:#8d6b3f"></span>House</span>
+                    <span class="chip"><span class="dot" style="background:#6f5b4d"></span>Storage</span>
+                    <span class="chip"><span class="dot" style="background:#5d6f83"></span>Mine</span>
+                    <span class="chip"><span class="dot" style="background:#4f6846"></span>Lumberyard</span>
+                    <span class="chip"><span class="dot" style="background:#6f7f8a"></span>Other building</span>
+                  </div>
+                </div>
+
+                <div class="legend-group">
+                  <b>Farm State</b>
+                  <div class="legend-list">
+                    <span class="chip"><span class="dot" style="background:#b38b5a"></span>prepared</span>
+                    <span class="chip"><span class="dot" style="background:#4f7f35"></span>planted</span>
+                    <span class="chip"><span class="dot" style="background:#4caf50"></span>growing</span>
+                    <span class="chip"><span class="dot" style="background:#e3be2b"></span>ripe</span>
+                    <span class="chip"><span class="dot" style="background:#5d3c32"></span>dead</span>
+                  </div>
+                </div>
+
+                <div class="legend-group">
+                  <b>Controls</b>
+                  <div class="legend-list">
+                    <span class="chip">Click map = inspect tile</span>
+                    <span class="chip">Minimap click = jump camera</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <h3 class="panel-title">Layers</h3>
+              <div id="layerToggles" class="toggle-grid"></div>
+
+              <h3 class="panel-title" style="margin-top:12px;">Connection</h3>
+              <div id="connectionPanel" class="kv-grid"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <aside class="side-column">
+        <div class="card inspector-main">
+          <div class="card-head" style="margin-bottom:8px;">
+            <h3>Selection Inspector</h3>
+            <span class="hint">Inspector-first tile analysis</span>
+          </div>
+          <div id="selectionPanel" class="inspector">-</div>
+        </div>
+
+        <div class="card">
+          <h3 class="panel-title">Hover Tile</h3>
+          <div id="hoverPanel" class="inspector mono">-</div>
+        </div>
+
+        <div class="card">
+          <h3 class="panel-title">Civilization Stats</h3>
+          <div id="civStatsPanel" class="kv-grid"></div>
+        </div>
+
+        <div class="card">
+          <h3 class="panel-title">Infrastructure</h3>
+          <div id="infraPanel" class="kv-grid"></div>
+        </div>
+
+        <div class="card">
+          <h3 class="panel-title">Global Summary</h3>
+          <div id="summaryPanel" class="kv-grid"></div>
+        </div>
+
+        <div class="card">
+          <h3 class="panel-title">Villages</h3>
+          <div class="small" id="villagesMeta"></div>
+          <div id="villageList" class="list"></div>
+        </div>
+
+        <div class="card">
+          <h3 class="panel-title">Agents</h3>
+          <div class="cluster" style="margin-bottom:6px;">
+            <b>Filter</b>
+            <input id="agentFilterInput" type="text" placeholder="id / role / task" style="min-width: 0; flex: 1;" />
+            <select id="agentCapSelect">
+              <option value="100" selected>100</option>
+              <option value="250">250</option>
+              <option value="500">500</option>
+            </select>
+          </div>
+          <div class="small" id="agentsMeta"></div>
+          <div id="agentList" class="list"></div>
+        </div>
+      </aside>
+    </main>
   </div>
 
   <script src="/frontend/state.js"></script>

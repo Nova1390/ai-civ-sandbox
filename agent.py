@@ -41,6 +41,7 @@ EARLY_SURVIVAL_GRACE_TICKS = 220
 EARLY_HUNGER_DECAY_MULTIPLIER = 0.85
 CAMP_BUFFER_HUNGER_DECAY_MULTIPLIER = 0.9
 LOCAL_LOOP_COMMITMENT_TICKS = 8
+EAT_TRIGGER_BASE_THRESHOLD = 50
 
 
 @dataclass
@@ -131,6 +132,8 @@ class Agent:
     social_memory: Dict[str, Dict[str, Any]] = field(
         default_factory=lambda: {"known_agents": {}}
     )
+    recent_encounters: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    recent_familiar_activity_zones: List[Dict[str, Any]] = field(default_factory=list)
     knowledge_state: Dict[str, List[Dict[str, Any]]] = field(
         default_factory=lambda: {
             "known_resource_spots": [],
@@ -483,7 +486,19 @@ class Agent:
                     pressure_active or int(local_food_pressure.get("camp_food", 0) if isinstance(local_food_pressure, dict) else 0) <= 2
                 ):
                     self.task = "camp_supply_food"
-                    self.camp_loop_commit_until_tick = tick_now + int(LOCAL_LOOP_COMMITMENT_TICKS)
+                    loop_bonus = 0
+                    density_state = self.subjective_state.get("social_density", {}) if isinstance(self.subjective_state, dict) else {}
+                    nearby_familiar = int(density_state.get("familiar_nearby_agents_count", 0))
+                    nearby_agents_count = int(density_state.get("nearby_agents_count", 0))
+                    if nearby_familiar > 0 and float(getattr(self, "hunger", 100.0)) >= 28.0:
+                        loop_bonus = 2
+                        if nearby_agents_count >= 8:
+                            loop_bonus = 1
+                            if hasattr(world, "record_social_encounter_event"):
+                                world.record_social_encounter_event("density_safe_loop_bonus_reduced_count")
+                        if hasattr(world, "record_social_encounter_event"):
+                            world.record_social_encounter_event("familiar_loop_continuity_bonus")
+                    self.camp_loop_commit_until_tick = tick_now + int(LOCAL_LOOP_COMMITMENT_TICKS) + int(loop_bonus)
                     if len(drop_pos) == 2:
                         self.task_target = (int(drop_pos[0]), int(drop_pos[1]))
                     if pressure_active and hasattr(world, "record_pressure_backed_loop_selected"):
@@ -496,7 +511,19 @@ class Agent:
             if proto_spec == "food_hauler":
                 if pressure_active or int(self.inventory.get("food", 0)) > 0:
                     self.task = "camp_supply_food"
-                    self.camp_loop_commit_until_tick = tick_now + int(LOCAL_LOOP_COMMITMENT_TICKS)
+                    loop_bonus = 0
+                    density_state = self.subjective_state.get("social_density", {}) if isinstance(self.subjective_state, dict) else {}
+                    nearby_familiar = int(density_state.get("familiar_nearby_agents_count", 0))
+                    nearby_agents_count = int(density_state.get("nearby_agents_count", 0))
+                    if nearby_familiar > 0 and float(getattr(self, "hunger", 100.0)) >= 28.0:
+                        loop_bonus = 2
+                        if nearby_agents_count >= 8:
+                            loop_bonus = 1
+                            if hasattr(world, "record_social_encounter_event"):
+                                world.record_social_encounter_event("density_safe_loop_bonus_reduced_count")
+                        if hasattr(world, "record_social_encounter_event"):
+                            world.record_social_encounter_event("familiar_loop_continuity_bonus")
+                    self.camp_loop_commit_until_tick = tick_now + int(LOCAL_LOOP_COMMITMENT_TICKS) + int(loop_bonus)
                     if int(self.inventory.get("food", 0)) > 0 and len(drop_pos) == 2:
                         self.task_target = (int(drop_pos[0]), int(drop_pos[1]))
                     elif len(source_pos) == 2:
@@ -575,7 +602,18 @@ class Agent:
                 return bool(hasattr(world, "is_farmer_task_viable") and world.is_farmer_task_viable(self))
             if role_name == "builder":
                 if task_name == "build_storage":
-                    return bool(priority == "build_storage" or needs.get("need_storage") or _has_village_construction_pressure())
+                    keep_for_active_storage = False
+                    if hasattr(world, "has_active_storage_construction_for_agent"):
+                        try:
+                            keep_for_active_storage = bool(world.has_active_storage_construction_for_agent(self))
+                        except Exception:
+                            keep_for_active_storage = False
+                    return bool(
+                        priority == "build_storage"
+                        or needs.get("need_storage")
+                        or _has_village_construction_pressure()
+                        or keep_for_active_storage
+                    )
                 if task_name == "build_house":
                     return bool(priority == "build_housing" or needs.get("need_housing") or _has_village_construction_pressure())
                 if task_name == "gather_materials":
@@ -610,15 +648,63 @@ class Agent:
                 return False
             if str(getattr(self, "role_task_persisted_task", "")) != prev_task:
                 return False
+            recent_events = get_recent_memory_events(self, limit=8)
+            recent_success = any(
+                isinstance(ev, dict)
+                and str(ev.get("outcome", "")) == "success"
+                and str(ev.get("type", "")) in {"farm_work", "farm_harvest", "hunger_relief", "construction_progress", "delivered_material", "found_resource"}
+                for ev in recent_events
+            )
+            recent_failure = any(
+                isinstance(ev, dict)
+                and str(ev.get("outcome", "")) == "failure"
+                and str(ev.get("type", "")) in {"failed_resource_search", "construction_blocked"}
+                for ev in recent_events
+            )
             if int(getattr(world, "tick", 0)) > int(getattr(self, "role_task_persistence_until_tick", -1)):
+                if hasattr(world, "record_settlement_progression_metric"):
+                    if recent_success:
+                        world.record_settlement_progression_metric("routine_abandonment_after_success")
+                    elif recent_failure:
+                        world.record_settlement_progression_metric("routine_abandonment_after_failure")
                 return False
             if not _is_task_still_viable_for_role(role_name, prev_task):
+                if hasattr(world, "record_settlement_progression_metric"):
+                    if recent_success:
+                        world.record_settlement_progression_metric("routine_abandonment_after_success")
+                    elif recent_failure:
+                        world.record_settlement_progression_metric("routine_abandonment_after_failure")
                 return False
             self.task = prev_task
+            if hasattr(world, "record_settlement_progression_metric"):
+                world.record_settlement_progression_metric("routine_persistence_ticks")
+                if recent_success:
+                    world.record_settlement_progression_metric("repeated_successful_loop_count")
+                    self.role_task_persistence_until_tick = max(
+                        int(self.role_task_persistence_until_tick),
+                        int(getattr(world, "tick", 0)) + int(ROUTINE_SUCCESS_EXTENSION_TICKS),
+                    )
+            if role_name == "builder" and str(prev_task) == "build_storage" and hasattr(world, "record_settlement_progression_metric"):
+                world.record_settlement_progression_metric("storage_builder_commitment_retained_ticks")
             return True
 
         def _stamp_task_persistence(role_name: str, task_name: str) -> None:
             duration = int(ROLE_TASK_PERSISTENCE_TICKS.get(role_name, 0))
+            if role_name == "farmer" and hasattr(world, "farm_task_continuity_bonus"):
+                try:
+                    duration += int(world.farm_task_continuity_bonus(self, task_name))
+                except Exception:
+                    pass
+            if role_name == "builder" and hasattr(world, "secondary_nucleus_builder_continuity_bonus"):
+                try:
+                    duration += int(world.secondary_nucleus_builder_continuity_bonus(self, task_name, record_event=True))
+                except Exception:
+                    pass
+            if role_name == "builder" and hasattr(world, "storage_builder_continuity_bonus"):
+                try:
+                    duration += int(world.storage_builder_continuity_bonus(self, task_name))
+                except Exception:
+                    pass
             if duration <= 0:
                 self.role_task_persisted_task = None
                 self.role_task_persistence_until_tick = -1
@@ -1150,12 +1236,15 @@ class Agent:
 
     def eat_if_needed(self, world: "World") -> bool:
         village = world.get_village_by_id(self.village_id)
-        trigger = 50
+        trigger = int(EAT_TRIGGER_BASE_THRESHOLD)
         ate = False
         preserve_inventory_food = False
         has_camp_food_nearby = bool(hasattr(world, "camp_has_food_for_agent") and world.camp_has_food_for_agent(self, max_distance=3))
+        has_house_food_nearby = bool(hasattr(world, "house_has_food_for_agent") and world.house_has_food_for_agent(self, max_distance=3))
         if has_camp_food_nearby:
             trigger = max(trigger, 54)
+        if has_house_food_nearby:
+            trigger = max(trigger, 58)
 
         if village is not None:
             storage = village.get("storage", {})
@@ -1181,6 +1270,36 @@ class Agent:
         if self.hunger >= trigger:
             return ate
 
+        # Survival-first: if hunger is already critical, consume carried food immediately.
+        if self.hunger <= 15 and self.inventory.get("food", 0) > 0:
+            self.inventory["food"] -= 1
+            self.hunger += FOOD_EAT_GAIN
+            if self.hunger > 100:
+                self.hunger = 100
+            if hasattr(world, "record_food_consumption"):
+                world.record_food_consumption("inventory", amount=1, agent=self)
+            return True
+
+        if hasattr(world, "consume_food_from_nearby_house"):
+            consumed = int(world.consume_food_from_nearby_house(self, amount=1))
+            if consumed > 0:
+                self.hunger += float(consumed) * float(FOOD_EAT_GAIN)
+                if self.hunger > 100:
+                    self.hunger = 100
+                if hasattr(world, "record_food_consumption"):
+                    world.record_food_consumption("domestic", amount=int(consumed), agent=self)
+                return True
+
+        if hasattr(world, "consume_food_from_nearby_camp"):
+            consumed = int(world.consume_food_from_nearby_camp(self, amount=1))
+            if consumed > 0:
+                self.hunger += float(consumed) * float(FOOD_EAT_GAIN)
+                if self.hunger > 100:
+                    self.hunger = 100
+                if hasattr(world, "record_food_consumption"):
+                    world.record_food_consumption("camp", amount=int(consumed), agent=self)
+                return True
+
         if village is not None:
             storage = village.get("storage", {})
             pop = max(1, village.get("population", 1))
@@ -1193,17 +1312,7 @@ class Agent:
                 if self.hunger > 100:
                     self.hunger = 100
                 if hasattr(world, "record_food_consumption"):
-                    world.record_food_consumption("storage", amount=1)
-                return True
-
-        if hasattr(world, "consume_food_from_nearby_camp"):
-            consumed = int(world.consume_food_from_nearby_camp(self, amount=1))
-            if consumed > 0:
-                self.hunger += float(consumed) * float(FOOD_EAT_GAIN)
-                if self.hunger > 100:
-                    self.hunger = 100
-                if hasattr(world, "record_food_consumption"):
-                    world.record_food_consumption("camp", amount=int(consumed))
+                    world.record_food_consumption("storage", amount=1, agent=self)
                 return True
 
         if self.inventory.get("food", 0) > 0 and (not preserve_inventory_food or self.hunger <= 15):
@@ -1212,7 +1321,7 @@ class Agent:
             if self.hunger > 100:
                 self.hunger = 100
             if hasattr(world, "record_food_consumption"):
-                world.record_food_consumption("inventory", amount=1)
+                world.record_food_consumption("inventory", amount=1, agent=self)
             ate = True
 
         return ate
@@ -1325,6 +1434,16 @@ class Agent:
             world.record_recovery_failure_reason(self, "not_resident", village_uid=uid, role=role_key)
         prev_task = str(getattr(self, "task", "idle"))
         self.update_role_task(world)
+        if hasattr(world, "record_behavior_transition"):
+            world.record_behavior_transition(prev_task, str(getattr(self, "task", "idle")), x=int(self.x), y=int(self.y))
+        if hasattr(world, "record_behavior_activity"):
+            world.record_behavior_activity(
+                f"task:{str(getattr(self, 'task', 'idle') or 'idle')}",
+                x=int(self.x),
+                y=int(self.y),
+                agent=self,
+            )
+        task_after_role = str(getattr(self, "task", "idle"))
         if high_pressure and str(getattr(self, "task", "")) != "rest" and hasattr(world, "record_recovery_failure_reason"):
             if float(getattr(self, "hunger", 100.0)) < 25.0:
                 world.record_recovery_failure_reason(self, "survival_override", village_uid=uid, role=role_key)
@@ -1350,8 +1469,26 @@ class Agent:
         }
         prev_critical = critical_task_map.get(prev_task)
         if prev_critical and str(getattr(self, "task", "")) != prev_task and hasattr(world, "record_task_completion_interrupted"):
-            reason = "survival_override" if str(getattr(self, "task", "")) == "survive" else "task_replaced"
+            reason = "survival_override" if (
+                str(getattr(self, "task", "")) == "survive"
+                or float(getattr(self, "hunger", 100.0)) <= 12.0
+            ) else "task_replaced"
             world.record_task_completion_interrupted(self, prev_critical, reason)
+            if prev_critical in {"build_house", "build_storage"} and hasattr(world, "record_situated_construction_event"):
+                if reason == "survival_override":
+                    world.record_situated_construction_event("construction_interrupted_survival")
+                else:
+                    world.record_situated_construction_event("construction_interrupted_invalid_target")
+            if prev_critical in {"build_house", "build_storage"} and hasattr(world, "record_settlement_progression_metric"):
+                if reason == "survival_override":
+                    world.record_settlement_progression_metric("construction_progress_stalled_ticks")
+                else:
+                    world.record_settlement_progression_metric("construction_material_delivery_drift_events")
+            if prev_critical == "build_storage" and hasattr(world, "record_settlement_progression_metric"):
+                if reason == "survival_override":
+                    world.record_settlement_progression_metric("storage_construction_interrupted_survival")
+                else:
+                    world.record_settlement_progression_metric("storage_construction_interrupted_invalid")
             if prev_critical == "construction_delivery" and hasattr(world, "record_delivery_pipeline_failure"):
                 delivery_reason = "task_replaced"
                 if str(getattr(self, "role", "")) != "hauler":
@@ -1380,6 +1517,11 @@ class Agent:
         moved = False
         active_work_performed = False
         action_was_move = bool(action and action[0] == "move")
+        if hasattr(world, "record_behavior_activity"):
+            if action_was_move:
+                world.record_behavior_activity("move_decision", x=int(self.x), y=int(self.y), agent=self)
+            elif action and action[0] == "wait":
+                world.record_behavior_activity("idle_wait", x=int(self.x), y=int(self.y), agent=self)
         move_start_pos = (int(self.x), int(self.y))
         move_target = getattr(self, "task_target", None)
         if move_target is None and isinstance(getattr(self, "current_intention", None), dict):
@@ -1462,8 +1604,19 @@ class Agent:
         world.autopickup(self)
         gathered = bool(world.gather_resource(self))
         if gathered:
+            if hasattr(world, "record_behavior_activity"):
+                world.record_behavior_activity("gather_resource", x=int(self.x), y=int(self.y), agent=self)
             self._add_work_fatigue(0.1)
             active_work_performed = True
+        if (
+            hasattr(world, "try_direct_material_drop_to_nearby_construction")
+            and float(getattr(self, "hunger", 100.0)) >= 20.0
+        ):
+            moved_local = int(world.try_direct_material_drop_to_nearby_construction(self, max_distance=2))
+            if moved_local > 0:
+                active_work_performed = True
+                if hasattr(world, "record_behavior_activity"):
+                    world.record_behavior_activity("construction_material_drop", x=int(self.x), y=int(self.y), agent=self, count=moved_local)
 
         fatigue_work_penalty = bool(
             float(self.fatigue) >= 85.0
@@ -1474,6 +1627,7 @@ class Agent:
         # azioni guidate da ruolo/task
         if self.task == "farm_cycle" and not fatigue_work_penalty:
             built_farm = world.try_build_farm(self)
+            farm_worked = False
             pos = (int(self.x), int(self.y))
             plot = getattr(world, "farm_plots", {}).get(pos)
             on_relevant_farm = bool(isinstance(plot, dict) and plot.get("village_id") == getattr(self, "village_id", None))
@@ -1481,9 +1635,11 @@ class Agent:
                 if hasattr(world, "record_assignment_pipeline_stage"):
                     world.record_assignment_pipeline_stage(self, "farmer", "action_attempted_count")
                 farm_worked = world.work_farm(self)
-                if built_farm or farm_worked:
-                    self._add_work_fatigue(0.12)
-                    active_work_performed = True
+            if built_farm or farm_worked:
+                if hasattr(world, "record_behavior_activity"):
+                    world.record_behavior_activity("farm_work", x=int(self.x), y=int(self.y), agent=self)
+                self._add_work_fatigue(0.12)
+                active_work_performed = True
                 if not farm_worked and hasattr(world, "record_workforce_block_reason"):
                     world.record_workforce_block_reason(self, "farmer", "no_valid_task")
             elif hasattr(world, "record_workforce_block_reason"):
@@ -1516,8 +1672,13 @@ class Agent:
                         world.record_task_completion_preconditions_failed(self, "build_storage", "no_materials_in_inventory")
             built = world.try_build_storage(self)
             if built or withdrew:
+                if hasattr(world, "record_behavior_activity"):
+                    world.record_behavior_activity("build_storage", x=int(self.x), y=int(self.y), agent=self)
                 self._add_work_fatigue(0.12)
                 active_work_performed = True
+            if built and hasattr(world, "record_local_practice"):
+                world.record_local_practice("construction_cluster", x=int(self.x), y=int(self.y), weight=0.9, decay_rate=0.0055)
+                world.record_local_practice("stable_storage_area", x=int(self.x), y=int(self.y), weight=0.8, decay_rate=0.005)
             if not built:
                 if village is not None:
                     storage = village.get("storage", {})
@@ -1554,10 +1715,14 @@ class Agent:
                     withdrew = self._withdraw_build_materials(world, wood_need=HOUSE_WOOD_COST, stone_need=HOUSE_STONE_COST)
                     if not withdrew and hasattr(world, "record_task_completion_preconditions_failed"):
                         world.record_task_completion_preconditions_failed(self, "build_house", "no_materials_in_inventory")
-            world.try_build_house(self)
+            built_house = bool(world.try_build_house(self))
             if withdrew:
+                if hasattr(world, "record_behavior_activity"):
+                    world.record_behavior_activity("build_house", x=int(self.x), y=int(self.y), agent=self)
                 self._add_work_fatigue(0.12)
                 active_work_performed = True
+            if built_house and hasattr(world, "record_local_practice"):
+                world.record_local_practice("construction_cluster", x=int(self.x), y=int(self.y), weight=0.75, decay_rate=0.0055)
 
         elif self.task == "build_road":
             # per ora la strada emerge dal movimento
@@ -1584,6 +1749,8 @@ class Agent:
                 transfer_active = False
             deposited = self._deposit_inventory_to_storage(world)
             if delivered or redistributed or transfer_active or deposited:
+                if hasattr(world, "record_behavior_activity"):
+                    world.record_behavior_activity("camp_supply_food", x=int(self.x), y=int(self.y), agent=self)
                 self._add_work_fatigue(0.1)
                 active_work_performed = True
             if not delivered and not redistributed and not transfer_active and not deposited:
@@ -1609,6 +1776,8 @@ class Agent:
                 transfer_active = False
             deposited = self._deposit_inventory_to_storage(world)
             if delivered or redistributed or transfer_active or deposited:
+                if hasattr(world, "record_behavior_activity"):
+                    world.record_behavior_activity("village_logistics", x=int(self.x), y=int(self.y), agent=self)
                 self._add_work_fatigue(0.1)
                 active_work_performed = True
             if not delivered and not redistributed and not transfer_active and not deposited:
@@ -1621,6 +1790,19 @@ class Agent:
 
         elif self.task == "gather_food_wild":
             # niente build casuali
+            if hasattr(world, "record_farm_discovery_observation"):
+                world.record_farm_discovery_observation(int(self.x), int(self.y), success=False, amount=0)
+            if (
+                str(getattr(self, "role", "")) in {"forager", "farmer"}
+                and float(getattr(self, "hunger", 100.0)) >= 25.0
+                and hasattr(world, "is_farmer_task_viable")
+                and bool(world.is_farmer_task_viable(self))
+            ):
+                if bool(world.try_build_farm(self)):
+                    if hasattr(world, "record_behavior_activity"):
+                        world.record_behavior_activity("farm_work", x=int(self.x), y=int(self.y), agent=self)
+                    self._add_work_fatigue(0.08)
+                    active_work_performed = True
             if hasattr(world, "record_assignment_pipeline_stage"):
                 world.record_assignment_pipeline_stage(self, "forager", "action_attempted_count")
             if hasattr(world, "record_workforce_block_reason"):
@@ -1649,9 +1831,13 @@ class Agent:
 
         elif self.task == "camp_supply_food":
             deposited = False
-            if hasattr(world, "try_deposit_food_to_nearby_camp"):
+            if hasattr(world, "try_deposit_food_to_local_buffers"):
+                deposited = int(world.try_deposit_food_to_local_buffers(self, amount=1, hunger_before=float(self.hunger))) > 0
+            elif hasattr(world, "try_deposit_food_to_nearby_camp"):
                 deposited = int(world.try_deposit_food_to_nearby_camp(self, amount=1, hunger_before=float(self.hunger))) > 0
             if deposited:
+                if hasattr(world, "record_behavior_activity"):
+                    world.record_behavior_activity("deposit_food", x=int(self.x), y=int(self.y), agent=self)
                 self._add_work_fatigue(0.06)
                 active_work_performed = True
 
@@ -1680,6 +1866,8 @@ class Agent:
         if not ate_before_action:
             self.eat_if_needed(world)
         self.try_reproduce(world)
+        if hasattr(world, "record_behavior_transition"):
+            world.record_behavior_transition(task_after_role, str(getattr(self, "task", "idle")), x=int(self.x), y=int(self.y))
 
     def _break_stall(self, world: "World") -> bool:
         target = self.task_target
@@ -1728,6 +1916,12 @@ def _clampf(value: float, low: float = 0.0, high: float = 1.0) -> float:
 KNOWLEDGE_MAX_ENTRIES_PER_CATEGORY = 12
 KNOWLEDGE_DECAY_PER_TICK = 0.0009
 KNOWLEDGE_MIN_CONFIDENCE = 0.15
+KNOWLEDGE_CONFIRMATION_DECAY_REDUCTION = 0.08
+KNOWLEDGE_CONFIRMATION_MAX_REDUCTION = 0.55
+KNOWLEDGE_DIRECT_DECAY_REDUCTION = 0.12
+KNOWLEDGE_SALIENCE_DECAY_REDUCTION = 0.10
+KNOWLEDGE_RECENT_CONFIRMATION_WINDOW = 26
+ROUTINE_SUCCESS_EXTENSION_TICKS = 3
 KNOWLEDGE_MAX_INVENTIONS = 10
 INVENTION_SOCIAL_MIN_CONFIDENCE = 0.35
 COMMUNICATION_COOLDOWN_TICKS = 6
@@ -1736,6 +1930,18 @@ SHARED_KNOWLEDGE_MAX_AGE_TICKS = 260
 SURVIVAL_CRITICAL_HUNGER_FOR_SOCIAL_KNOWLEDGE = 34.0
 COGNITIVE_TIER_MIN = 1
 COGNITIVE_TIER_MAX = 4
+MAX_RECENT_ENCOUNTERS = 32
+ENCOUNTER_FAMILIARITY_GAIN = 0.08
+ENCOUNTER_FAMILIARITY_DECAY_PER_TICK = 0.005
+ENCOUNTER_STALE_TICKS = 220
+MAX_FAMILIAR_ACTIVITY_ZONES = 10
+FAMILIAR_ZONE_SCORE_GAIN = 0.12
+FAMILIAR_ZONE_SCORE_DECAY_PER_TICK = 0.01
+FAMILIAR_ZONE_SCORE_MAX = 0.78
+FAMILIAR_ZONE_DENSITY_SOFT_CAP = 6
+FAMILIAR_ZONE_DENSITY_HARD_CAP = 10
+FAMILIAR_ZONE_LOW_PAYOFF_DECAY_BOOST = 0.016
+FAMILIAR_ZONE_USEFUL_REFRESH_WINDOW = 4
 
 
 def _default_self_model() -> Dict[str, float]:
@@ -1834,6 +2040,8 @@ def _upsert_knowledge_entry(
         existing_conf = float(existing.get("confidence", 0.0))
         existing["confidence"] = round(_clampf(existing_conf + confidence_boost), 3)
         existing["learned_tick"] = int(tick)
+        existing["last_confirmed_tick"] = int(tick)
+        existing["confirmations"] = int(existing.get("confirmations", 1)) + 1
         existing["salience"] = round(
             _clampf(max(float(existing.get("salience", 0.0)), float(new_entry.get("salience", 0.0)))),
             3,
@@ -1854,6 +2062,8 @@ def _upsert_knowledge_entry(
             "y": int((new_entry.get("location", {}) if isinstance(new_entry.get("location"), dict) else {}).get("y", 0)),
         },
         "learned_tick": int(tick),
+        "last_confirmed_tick": int(tick),
+        "confirmations": 1,
         "confidence": round(_clampf(float(new_entry.get("confidence", 0.5))), 3),
         "source": str(new_entry.get("source", "direct")),
         "salience": round(_clampf(float(new_entry.get("salience", 0.5))), 3),
@@ -1893,6 +2103,8 @@ def _upsert_known_invention_entry(
         if _known_invention_key(existing) != entry_key:
             continue
         existing["learned_tick"] = int(tick)
+        existing["last_confirmed_tick"] = int(tick)
+        existing["confirmations"] = int(existing.get("confirmations", 1)) + 1
         current_conf = float(existing.get("confidence", 0.0))
         incoming_conf = float(new_entry.get("confidence", 0.5))
         existing["confidence"] = round(_clampf(max(current_conf, incoming_conf) + confidence_boost), 3)
@@ -1915,6 +2127,8 @@ def _upsert_known_invention_entry(
         "intended_effects": [str(e) for e in list(new_entry.get("intended_effects", []))[:3] if str(e)],
         "location": {"x": int(loc.get("x", 0)), "y": int(loc.get("y", 0))},
         "learned_tick": int(tick),
+        "last_confirmed_tick": int(tick),
+        "confirmations": 1,
         "confidence": round(_clampf(float(new_entry.get("confidence", 0.5))), 3),
         "source": str(new_entry.get("source", "direct")),
         "usefulness_status": str(new_entry.get("usefulness_status", "unknown")),
@@ -2012,7 +2226,16 @@ def update_agent_knowledge_from_experience(world: "World", agent: Agent) -> None
                 if not isinstance(lloc, dict):
                     continue
                 if _manhattan((x, y), (int(lloc.get("x", 0)), int(lloc.get("y", 0)))) <= 2:
-                    entry["confidence"] = round(_clampf(float(entry.get("confidence", 0.0)) - 0.12), 3)
+                    prior = float(entry.get("confidence", 0.0))
+                    updated = _clampf(prior - 0.12)
+                    entry["confidence"] = round(updated, 3)
+                    if (
+                        prior >= KNOWLEDGE_MIN_CONFIDENCE
+                        and updated < KNOWLEDGE_MIN_CONFIDENCE
+                        and str(entry.get("source", "")) == "direct"
+                        and hasattr(world, "record_direct_memory_invalidation")
+                    ):
+                        world.record_direct_memory_invalidation(1)
 
     # Direct local camp observation becomes lightweight reusable knowledge.
     if hasattr(world, "nearest_active_camp_for_agent"):
@@ -2062,6 +2285,8 @@ def update_agent_knowledge_from_experience(world: "World", agent: Agent) -> None
         entry["confidence"] = round(decayed, 3)
         if decayed >= KNOWLEDGE_MIN_CONFIDENCE:
             keep_camps.append(entry)
+        elif str(entry.get("source", "")) == "direct" and hasattr(world, "record_direct_memory_invalidation"):
+            world.record_direct_memory_invalidation(1)
         elif str(entry.get("source", "")) == "social" and hasattr(world, "record_invalidated_shared_knowledge"):
             world.record_invalidated_shared_knowledge(1)
     state["known_camp_spots"] = keep_camps[:KNOWLEDGE_MAX_ENTRIES_PER_CATEGORY]
@@ -2193,9 +2418,17 @@ def diffuse_invention_knowledge(world: "World", agent: Agent) -> None:
             rec = known_agents.get(aid, {})
             if isinstance(rec, dict):
                 familiarity = min(1.0, float(rec.get("times_seen", 0)) / 8.0)
+        encounter_familiarity = 0.0
+        encounter_memory = getattr(agent, "recent_encounters", {})
+        if isinstance(encounter_memory, dict):
+            enc = encounter_memory.get(aid, {})
+            if isinstance(enc, dict):
+                encounter_familiarity = _clampf(float(enc.get("familiarity_score", 0.0)))
         same_village = bool(near.get("same_village", False))
         donor_infl = _clampf(float(getattr(donor, "social_influence", 0.0)))
-        trust = 0.24 + (0.24 if same_village else 0.0) + familiarity * 0.30 + donor_infl * 0.22
+        trust = 0.24 + (0.24 if same_village else 0.0) + familiarity * 0.24 + encounter_familiarity * 0.12 + donor_infl * 0.22
+        if encounter_familiarity >= 0.35 and hasattr(world, "record_social_encounter_event"):
+            world.record_social_encounter_event("familiar_communication_bonus_applied")
         if trust < 0.54:
             continue
         candidates = [
@@ -2264,11 +2497,19 @@ def diffuse_local_knowledge(world: "World", agent: Agent) -> None:
             if isinstance(rec, dict):
                 donor_record = rec
                 familiarity = min(1.0, float(rec.get("times_seen", 0)) / 8.0)
+        encounter_familiarity = 0.0
+        encounter_memory = getattr(agent, "recent_encounters", {})
+        if isinstance(encounter_memory, dict):
+            enc = encounter_memory.get(aid, {})
+            if isinstance(enc, dict):
+                encounter_familiarity = _clampf(float(enc.get("familiarity_score", 0.0)))
         if int(tick - int(donor_record.get("last_knowledge_share_tick", -10_000))) < int(COMMUNICATION_COOLDOWN_TICKS):
             continue
         same_village = bool(near.get("same_village", False))
         donor_infl = _clampf(float(getattr(donor, "social_influence", 0.0)))
-        trust = 0.25 + (0.25 if same_village else 0.0) + familiarity * 0.3 + donor_infl * 0.2
+        trust = 0.25 + (0.25 if same_village else 0.0) + familiarity * 0.24 + encounter_familiarity * 0.12 + donor_infl * 0.2
+        if encounter_familiarity >= 0.35 and hasattr(world, "record_social_encounter_event"):
+            world.record_social_encounter_event("familiar_communication_bonus_applied")
         if trust < 0.52:
             continue
 
@@ -2410,6 +2651,8 @@ def diffuse_local_knowledge(world: "World", agent: Agent) -> None:
                     world.record_communication_event("camp")
                 else:
                     world.record_communication_event("other")
+            if hasattr(world, "record_behavior_activity"):
+                world.record_behavior_activity("communication_event", x=int(agent.x), y=int(agent.y), agent=agent)
             known_recent_keys.add(chosen_key)
         if shared_any and isinstance(donor_record, dict):
             donor_record["last_knowledge_share_tick"] = int(tick)
@@ -2432,18 +2675,41 @@ def decay_agent_knowledge_state(world: "World", agent: Agent) -> None:
                 continue
             learned_tick = int(entry.get("learned_tick", tick))
             age = max(0, tick - learned_tick)
+            confirmations = max(1, int(entry.get("confirmations", 1)))
+            recent_confirmation = max(0, tick - int(entry.get("last_confirmed_tick", learned_tick))) <= int(
+                KNOWLEDGE_RECENT_CONFIRMATION_WINDOW
+            )
             decay_rate = KNOWLEDGE_DECAY_PER_TICK
             if category == "known_inventions":
                 decay_rate = KNOWLEDGE_DECAY_PER_TICK * (1.25 if str(entry.get("source", "social")) == "social" else 0.9)
                 if str(entry.get("usefulness_status", "")) == "ineffective":
                     decay_rate *= 1.7
-            decayed = _clampf(float(entry.get("confidence", 0.0)) - age * decay_rate)
+            retention_bonus = min(
+                float(KNOWLEDGE_CONFIRMATION_MAX_REDUCTION),
+                float(max(0, confirmations - 1)) * float(KNOWLEDGE_CONFIRMATION_DECAY_REDUCTION),
+            )
+            if str(entry.get("source", "social")) == "direct":
+                retention_bonus += float(KNOWLEDGE_DIRECT_DECAY_REDUCTION)
+            if float(entry.get("salience", 0.0)) >= 0.7:
+                retention_bonus += float(KNOWLEDGE_SALIENCE_DECAY_REDUCTION)
+            if recent_confirmation:
+                retention_bonus += 0.06
+            effective_decay = decay_rate * max(0.18, 1.0 - retention_bonus)
+            decayed = _clampf(float(entry.get("confidence", 0.0)) - age * effective_decay)
             entry["confidence"] = round(decayed, 3)
+            if (
+                confirmations >= 2
+                and int(entry.get("last_confirmed_tick", -1)) == int(tick)
+                and hasattr(world, "record_confirmed_memory_reinforcement")
+            ):
+                world.record_confirmed_memory_reinforcement(1)
             min_conf = KNOWLEDGE_MIN_CONFIDENCE if category != "known_inventions" else min(KNOWLEDGE_MIN_CONFIDENCE, INVENTION_SOCIAL_MIN_CONFIDENCE)
             if decayed >= min_conf:
                 kept.append(entry)
             else:
                 expired += 1
+                if str(entry.get("source", "")) == "direct" and hasattr(world, "record_direct_memory_invalidation"):
+                    world.record_direct_memory_invalidation(1)
         kept.sort(
             key=lambda e: (
                 -float(e.get("confidence", 0.0)),
@@ -3357,6 +3623,16 @@ def evaluate_agent_social_influence(world: "World", agent: Agent) -> float:
             familiarity_samples.append(min(1.0, times_seen / 8.0))
         if familiarity_samples:
             familiarity_score = sum(familiarity_samples) / float(len(familiarity_samples))
+    encounter_memory = getattr(agent, "recent_encounters", {})
+    encounter_familiarity = 0.0
+    if isinstance(encounter_memory, dict) and encounter_memory:
+        fam_values = [
+            float(entry.get("familiarity_score", 0.0))
+            for entry in encounter_memory.values()
+            if isinstance(entry, dict)
+        ]
+        if fam_values:
+            encounter_familiarity = sum(fam_values) / float(len(fam_values))
 
     recent_events = get_recent_memory_events(agent, limit=24)
     cooperative_successes = 0
@@ -3388,7 +3664,8 @@ def evaluate_agent_social_influence(world: "World", agent: Agent) -> float:
     local_presence_score = min(1.0, nearby_count / 4.0)
 
     raw_score = (
-        familiarity_score * 0.28
+        familiarity_score * 0.24
+        + encounter_familiarity * 0.08
         + cooperative_score * 0.24
         + trait_score * 0.24
         + success_score * 0.14
@@ -3788,6 +4065,14 @@ def update_agent_social_memory(world: "World", agent: Agent, subjective_state: D
         social_memory["known_agents"] = known_agents
 
     tick = int(getattr(world, "tick", 0))
+    encounter_memory = getattr(agent, "recent_encounters", None)
+    if not isinstance(encounter_memory, dict):
+        encounter_memory = {}
+        agent.recent_encounters = encounter_memory
+    familiar_zones = getattr(agent, "recent_familiar_activity_zones", None)
+    if not isinstance(familiar_zones, list):
+        familiar_zones = []
+        agent.recent_familiar_activity_zones = familiar_zones
     nearby_agents = subjective_state.get("nearby_agents", []) if isinstance(subjective_state, dict) else []
     if not isinstance(nearby_agents, list):
         nearby_agents = []
@@ -3799,6 +4084,7 @@ def update_agent_social_memory(world: "World", agent: Agent, subjective_state: D
             break
 
     seen_ids = set()
+    familiar_nearby = 0
     for entry in nearby_agents:
         if not isinstance(entry, dict):
             continue
@@ -3840,6 +4126,34 @@ def update_agent_social_memory(world: "World", agent: Agent, subjective_state: D
             social_salience += 0.6
         record["social_salience"] = round(float(min(4.0, social_salience)), 3)
 
+        # Bounded encounter memory for repeated local familiarity.
+        encounter = encounter_memory.get(agent_id)
+        if not isinstance(encounter, dict):
+            encounter = {
+                "encounter_count": 0,
+                "last_encounter_tick": tick,
+                "familiarity_score": 0.0,
+            }
+            encounter_memory[agent_id] = encounter
+        encounter["encounter_count"] = int(encounter.get("encounter_count", 0)) + 1
+        encounter["last_encounter_tick"] = int(tick)
+        current_familiarity = float(encounter.get("familiarity_score", 0.0))
+        familiarity_gain = float(ENCOUNTER_FAMILIARITY_GAIN)
+        if bool(same_village):
+            familiarity_gain += 0.02
+        if str(record.get("recent_interaction", "")) == "co_present_success":
+            familiarity_gain += 0.02
+        encounter["familiarity_score"] = round(_clampf(current_familiarity + familiarity_gain), 3)
+        if hasattr(world, "record_social_encounter_event"):
+            world.record_social_encounter_event("total_encounter_events")
+            if hasattr(world, "record_behavior_activity"):
+                world.record_behavior_activity("encounter_event", x=int(agent.x), y=int(agent.y), agent=agent)
+            if float(encounter.get("familiarity_score", 0.0)) >= 0.25:
+                familiar_nearby += 1
+                world.record_social_encounter_event("familiar_agent_proximity_events")
+                if hasattr(world, "record_behavior_activity"):
+                    world.record_behavior_activity("familiar_proximity", x=int(agent.x), y=int(agent.y), agent=agent)
+
     # Deterministic decay for unseen entries.
     for agent_id in sorted(list(known_agents.keys())):
         if agent_id in seen_ids:
@@ -3854,6 +4168,114 @@ def update_agent_social_memory(world: "World", agent: Agent, subjective_state: D
         record["social_salience"] = round(max(0.0, base_salience - decay), 3)
         if age > 20 and str(record.get("recent_interaction", "")) == "co_present_success":
             record["recent_interaction"] = "seen"
+
+    # Deterministic encounter-memory decay and stale pruning.
+    for agent_id in sorted(list(encounter_memory.keys())):
+        encounter = encounter_memory.get(agent_id)
+        if not isinstance(encounter, dict):
+            encounter_memory.pop(agent_id, None)
+            continue
+        last_seen = int(encounter.get("last_encounter_tick", tick))
+        age = max(0, tick - last_seen)
+        if age > int(ENCOUNTER_STALE_TICKS):
+            encounter_memory.pop(agent_id, None)
+            continue
+        if agent_id in seen_ids:
+            continue
+        familiarity = float(encounter.get("familiarity_score", 0.0))
+        next_familiarity = max(
+            0.0,
+            familiarity - float(ENCOUNTER_FAMILIARITY_DECAY_PER_TICK) * float(min(age, 25)),
+        )
+        encounter["familiarity_score"] = round(next_familiarity, 3)
+
+    # Familiar activity zone reinforcement from repeated encounters + useful local success.
+    recent = get_recent_memory_events(agent, limit=8)
+    useful_local_success = any(
+        isinstance(ev, dict)
+        and str(ev.get("outcome", "")) == "success"
+        and str(ev.get("type", "")) in {"found_resource", "hunger_relief", "delivered_material", "construction_progress"}
+        and tick - int(ev.get("tick", tick)) <= int(FAMILIAR_ZONE_USEFUL_REFRESH_WINDOW)
+        for ev in recent
+    )
+    nearby_agents_count = int(len(nearby_agents))
+    if nearby_agents_count <= int(FAMILIAR_ZONE_DENSITY_SOFT_CAP):
+        density_factor = 1.0
+    elif nearby_agents_count >= int(FAMILIAR_ZONE_DENSITY_HARD_CAP):
+        density_factor = 0.4
+    else:
+        span = float(max(1, int(FAMILIAR_ZONE_DENSITY_HARD_CAP) - int(FAMILIAR_ZONE_DENSITY_SOFT_CAP)))
+        over = float(nearby_agents_count - int(FAMILIAR_ZONE_DENSITY_SOFT_CAP))
+        density_factor = 1.0 - 0.6 * (over / span)
+    density_factor = max(0.4, min(1.0, density_factor))
+    if familiar_nearby > 0 and useful_local_success:
+        zx, zy = int(getattr(agent, "x", 0)), int(getattr(agent, "y", 0))
+        matched = None
+        for zone in familiar_zones:
+            if not isinstance(zone, dict):
+                continue
+            if _manhattan((zx, zy), (int(zone.get("x", -9999)), int(zone.get("y", -9999)))) <= 3:
+                matched = zone
+                break
+        gain = float(FAMILIAR_ZONE_SCORE_GAIN) + min(0.08, float(familiar_nearby) * 0.02)
+        if isinstance(matched, dict):
+            use_count = int(matched.get("use_count", 0))
+            gain /= (1.0 + 0.18 * float(max(0, use_count - 1)))
+        gain *= density_factor
+        if density_factor < 0.98 and hasattr(world, "record_social_encounter_event"):
+            world.record_social_encounter_event("dense_area_social_bias_reductions")
+        if isinstance(matched, dict):
+            prev_score = float(matched.get("score", 0.0))
+            next_score = min(float(FAMILIAR_ZONE_SCORE_MAX), prev_score + gain)
+            matched["score"] = round(next_score, 3)
+            matched["last_tick"] = int(tick)
+            matched["use_count"] = int(matched.get("use_count", 0)) + 1
+            if next_score >= float(FAMILIAR_ZONE_SCORE_MAX) and prev_score < float(FAMILIAR_ZONE_SCORE_MAX) and hasattr(world, "record_social_encounter_event"):
+                world.record_social_encounter_event("familiar_zone_saturation_clamps")
+        else:
+            initial_score = min(float(FAMILIAR_ZONE_SCORE_MAX), gain)
+            familiar_zones.append(
+                {
+                    "x": zx,
+                    "y": zy,
+                    "score": round(initial_score, 3),
+                    "last_tick": int(tick),
+                    "use_count": 1,
+                }
+            )
+            if initial_score >= float(FAMILIAR_ZONE_SCORE_MAX) and hasattr(world, "record_social_encounter_event"):
+                world.record_social_encounter_event("familiar_zone_saturation_clamps")
+        if hasattr(world, "record_social_encounter_event"):
+            world.record_social_encounter_event("familiar_zone_reinforcement_events")
+            world.record_social_encounter_event("familiar_zone_score_updates")
+
+    # Zone score decay and bounded retention.
+    keep_zones: List[Dict[str, Any]] = []
+    for zone in familiar_zones:
+        if not isinstance(zone, dict):
+            continue
+        age = max(0, tick - int(zone.get("last_tick", tick)))
+        decay_rate = float(FAMILIAR_ZONE_SCORE_DECAY_PER_TICK)
+        if not useful_local_success and age >= int(FAMILIAR_ZONE_USEFUL_REFRESH_WINDOW):
+            decay_rate += float(FAMILIAR_ZONE_LOW_PAYOFF_DECAY_BOOST)
+            if hasattr(world, "record_social_encounter_event"):
+                world.record_social_encounter_event("familiar_zone_decay_due_to_low_payoff")
+        score = max(0.0, float(zone.get("score", 0.0)) - decay_rate * float(min(age, 20)))
+        if score <= 0.02 or age > 180:
+            if hasattr(world, "record_social_encounter_event"):
+                world.record_social_encounter_event("familiar_zone_score_decay")
+            continue
+        zone["score"] = round(score, 3)
+        keep_zones.append(zone)
+    keep_zones.sort(
+        key=lambda z: (
+            -float(z.get("score", 0.0)),
+            -int(z.get("last_tick", 0)),
+            int(z.get("y", 0)),
+            int(z.get("x", 0)),
+        )
+    )
+    agent.recent_familiar_activity_zones = keep_zones[: int(MAX_FAMILIAR_ACTIVITY_ZONES)]
 
     # Bounded social memory: drop least recent/least salient deterministically.
     max_known_agents = 40
@@ -3870,6 +4292,21 @@ def update_agent_social_memory(world: "World", agent: Agent, subjective_state: D
         overflow = len(known_agents) - max_known_agents
         for k in keys[:overflow]:
             known_agents.pop(k, None)
+
+    # Bounded encounter memory size.
+    if len(encounter_memory) > int(MAX_RECENT_ENCOUNTERS):
+        keys = sorted(
+            encounter_memory.keys(),
+            key=lambda k: (
+                int((encounter_memory.get(k, {}) if isinstance(encounter_memory.get(k, {}), dict) else {}).get("last_encounter_tick", 0)),
+                float((encounter_memory.get(k, {}) if isinstance(encounter_memory.get(k, {}), dict) else {}).get("familiarity_score", 0.0)),
+                int((encounter_memory.get(k, {}) if isinstance(encounter_memory.get(k, {}), dict) else {}).get("encounter_count", 0)),
+                str(k),
+            ),
+        )
+        overflow = len(encounter_memory) - int(MAX_RECENT_ENCOUNTERS)
+        for k in keys[:overflow]:
+            encounter_memory.pop(k, None)
 
 
 def update_agent_self_model(world: "World", agent: Agent) -> Dict[str, Any]:
@@ -4059,6 +4496,14 @@ def build_agent_perception(world: "World", agent: Agent) -> Dict[str, Any]:
             }
         )
     nearby_agents.sort(key=lambda a: (a["distance"], a["y"], a["x"], a["agent_id"]))
+    encounter_memory = getattr(agent, "recent_encounters", {})
+    familiar_nearby_count = 0
+    if isinstance(encounter_memory, dict):
+        for entry in nearby_agents:
+            aid = str(entry.get("agent_id", ""))
+            enc = encounter_memory.get(aid, {})
+            if isinstance(enc, dict) and float(enc.get("familiarity_score", 0.0)) >= 0.22:
+                familiar_nearby_count += 1
 
     terrain_summary: Dict[str, int] = {}
     nearby_transport: List[Dict[str, Any]] = []
@@ -4094,6 +4539,10 @@ def build_agent_perception(world: "World", agent: Agent) -> Dict[str, Any]:
         "nearby_resources": nearby_resources,
         "nearby_buildings": nearby_buildings,
         "nearby_agents": nearby_agents,
+        "social_density": {
+            "nearby_agents_count": int(len(nearby_agents)),
+            "familiar_nearby_agents_count": int(familiar_nearby_count),
+        },
         "nearby_infrastructure": {"transport_tiles": nearby_transport},
         "terrain_summary": {k: int(v) for k, v in sorted(terrain_summary.items(), key=lambda item: item[0])},
         "local_signals": _village_local_signals(world, agent),
@@ -4139,6 +4588,19 @@ def evaluate_agent_salience(world: "World", agent: Agent) -> Dict[str, Any]:
     nearby_resources = state.get("nearby_resources", {}) if isinstance(state.get("nearby_resources"), dict) else {}
     nearby_buildings = state.get("nearby_buildings", []) if isinstance(state.get("nearby_buildings"), list) else []
     nearby_agents = state.get("nearby_agents", []) if isinstance(state.get("nearby_agents"), list) else []
+    familiar_zones = getattr(agent, "recent_familiar_activity_zones", [])
+    if not isinstance(familiar_zones, list):
+        familiar_zones = []
+    nearby_count = int(len(nearby_agents))
+    if nearby_count <= int(FAMILIAR_ZONE_DENSITY_SOFT_CAP):
+        density_zone_factor = 1.0
+    elif nearby_count >= int(FAMILIAR_ZONE_DENSITY_HARD_CAP):
+        density_zone_factor = 0.4
+    else:
+        span = float(max(1, int(FAMILIAR_ZONE_DENSITY_HARD_CAP) - int(FAMILIAR_ZONE_DENSITY_SOFT_CAP)))
+        over = float(nearby_count - int(FAMILIAR_ZONE_DENSITY_SOFT_CAP))
+        density_zone_factor = 1.0 - 0.6 * (over / span)
+    density_zone_factor = max(0.4, min(1.0, density_zone_factor))
 
     scored_resources: List[Dict[str, Any]] = []
     recent_resource_events = find_recent_resource_memory(agent, "food") + find_recent_resource_memory(agent, "wood") + find_recent_resource_memory(agent, "stone")
@@ -4206,6 +4668,15 @@ def evaluate_agent_salience(world: "World", agent: Agent) -> Dict[str, Any]:
                 score -= 0.9
             if culture_focus == resource:
                 score += 0.22
+            for zone in familiar_zones[:4]:
+                if not isinstance(zone, dict):
+                    continue
+                zd = _manhattan((x, y), (int(zone.get("x", x)), int(zone.get("y", y))))
+                if zd <= 6:
+                    zone_bonus = float(zone.get("score", 0.0)) * (0.18 / float(max(1, zd))) * density_zone_factor
+                    score += zone_bonus
+                    if density_zone_factor < 0.98 and zone_bonus > 0.0 and hasattr(world, "record_social_encounter_event"):
+                        world.record_social_encounter_event("overcrowded_familiar_bias_suppressed")
             score += recent_resource_boost.get((resource, x, y), 0.0)
 
             scored_resources.append(
@@ -4273,6 +4744,15 @@ def evaluate_agent_salience(world: "World", agent: Agent) -> Dict[str, Any]:
             if food_crisis:
                 score -= 0.8
         score += useful_building_boost.get(building_id, 0.0)
+        for zone in familiar_zones[:4]:
+            if not isinstance(zone, dict):
+                continue
+            zd = _manhattan((int(entry.get("x", 0)), int(entry.get("y", 0))), (int(zone.get("x", 0)), int(zone.get("y", 0))))
+            if zd <= 6:
+                zone_bonus = float(zone.get("score", 0.0)) * (0.14 / float(max(1, zd))) * density_zone_factor
+                score += zone_bonus
+                if density_zone_factor < 0.98 and zone_bonus > 0.0 and hasattr(world, "record_social_encounter_event"):
+                    world.record_social_encounter_event("overcrowded_familiar_bias_suppressed")
 
         scored_buildings.append(
             {
@@ -4299,6 +4779,9 @@ def evaluate_agent_salience(world: "World", agent: Agent) -> Dict[str, Any]:
     scored_social: List[Dict[str, Any]] = []
     social_memory = getattr(agent, "social_memory", {})
     known_agents = social_memory.get("known_agents", {}) if isinstance(social_memory, dict) else {}
+    encounter_memory = getattr(agent, "recent_encounters", {})
+    familiar_count = 0
+    familiar_strength = 0.0
     for entry in nearby_agents:
         if not isinstance(entry, dict):
             continue
@@ -4323,6 +4806,13 @@ def evaluate_agent_salience(world: "World", agent: Agent) -> Dict[str, Any]:
                 score += 0.4
             if str(record.get("recent_interaction", "")) == "co_present_success":
                 score += 0.7 * (0.4 + social_w + cooperation * 0.12)
+        encounter = encounter_memory.get(other_id, {}) if isinstance(encounter_memory, dict) else {}
+        if isinstance(encounter, dict):
+            familiarity = float(encounter.get("familiarity_score", 0.0))
+            score += min(0.9, familiarity * 0.55)
+            if familiarity >= 0.22:
+                familiar_count += 1
+                familiar_strength += familiarity
         scored_social.append(
             {
                 "agent_id": other_id,
@@ -4344,6 +4834,9 @@ def evaluate_agent_salience(world: "World", agent: Agent) -> Dict[str, Any]:
         )
     )
     top_social_targets = scored_social[:3]
+    local_social_density = float(len(nearby_agents))
+    familiar_density = float(familiar_count)
+    density_signal = min(1.0, (local_social_density / 5.0) * 0.6 + (familiar_density / 3.0) * 0.4)
     familiar_agents_nearby = [
         {
             "agent_id": str(s.get("agent_id", "")),
@@ -4383,6 +4876,68 @@ def evaluate_agent_salience(world: "World", agent: Agent) -> Dict[str, Any]:
             )
         )
 
+    # Weak local social-density utility bias in viable conditions.
+    if survival_pressure < 0.70 and hunger >= 35.0 and density_signal > 0.20:
+        social_bonus = 0.10 + density_signal * 0.22 + min(0.18, familiar_strength * 0.08)
+        social_bonus *= density_zone_factor
+        if density_zone_factor < 0.98 and hasattr(world, "record_social_encounter_event"):
+            world.record_social_encounter_event("dense_area_social_bias_reductions")
+        if top_resource_targets:
+            top_resource_targets[0]["salience"] = round(float(top_resource_targets[0]["salience"]) + social_bonus * 0.6, 3)
+        if top_building_targets:
+            top_building_targets[0]["salience"] = round(float(top_building_targets[0]["salience"]) + social_bonus * 0.4, 3)
+        if hasattr(world, "record_social_encounter_event"):
+            world.record_social_encounter_event("social_density_bias_applied_count")
+
+    cultural_bias = {}
+    if hasattr(world, "get_local_practice_bias"):
+        try:
+            cultural_bias = world.get_local_practice_bias(int(agent.x), int(agent.y))
+        except Exception:
+            cultural_bias = {}
+    food_cultural = float(cultural_bias.get("productive_food_patch", 0.0)) + float(cultural_bias.get("good_gathering_zone", 0.0))
+    farm_cultural = float(cultural_bias.get("proto_farm_area", 0.0))
+    construction_cultural = float(cultural_bias.get("construction_cluster", 0.0)) + float(cultural_bias.get("stable_storage_area", 0.0))
+    applied_cultural_bonus = False
+    if survival_pressure < 0.82:
+        food_bonus = min(0.85, food_cultural * 0.22 + farm_cultural * 0.14)
+        if food_bonus > 0.0:
+            for entry in top_resource_targets:
+                if str(entry.get("resource", "")) == "food":
+                    dist = max(1, int(entry.get("distance", 1)))
+                    entry["salience"] = round(float(entry.get("salience", 0.0)) + (food_bonus / float(dist)), 3)
+                    applied_cultural_bonus = True
+        build_bonus = min(0.75, construction_cultural * 0.20)
+        if build_bonus > 0.0:
+            for entry in top_building_targets:
+                btype = str(entry.get("type", ""))
+                state = str(entry.get("operational_state", "active"))
+                if btype in {"house", "storage", "farm_plot"} or state == "under_construction":
+                    dist = max(1, int(entry.get("distance", 1)))
+                    entry["salience"] = round(float(entry.get("salience", 0.0)) + (build_bonus / float(dist)), 3)
+                    applied_cultural_bonus = True
+        if applied_cultural_bonus and hasattr(world, "record_settlement_progression_metric"):
+            world.record_settlement_progression_metric("agents_using_cultural_memory_bias")
+        if applied_cultural_bonus:
+            top_resource_targets.sort(
+                key=lambda r: (
+                    -float(r["salience"]),
+                    int(r["distance"]),
+                    int(r["y"]),
+                    int(r["x"]),
+                    str(r["resource"]),
+                )
+            )
+            top_building_targets.sort(
+                key=lambda b: (
+                    -float(b["salience"]),
+                    int(b["distance"]),
+                    int(b["y"]),
+                    int(b["x"]),
+                    str(b["building_id"]),
+                )
+            )
+
     dominant_local_signal = "none"
     food_pressure = float((market_state.get("food") or {}).get("pressure", 0.0)) if isinstance(market_state, dict) else 0.0
     wood_pressure = float((market_state.get("wood") or {}).get("pressure", 0.0)) if isinstance(market_state, dict) else 0.0
@@ -4416,6 +4971,8 @@ def evaluate_agent_salience(world: "World", agent: Agent) -> Dict[str, Any]:
         current_focus = "urgent_food"
     elif dominant_local_signal == "construction_pressure":
         current_focus = "construction_support"
+    elif farm_cultural >= 0.45 and role == "farmer" and survival_pressure < 0.55 and hunger >= 35.0:
+        current_focus = "farming_continuity"
     elif (
         explore_w + curiosity * 0.12 + culture_explore * 0.10 > 0.55
         and effective_stress < 0.35
@@ -4429,6 +4986,12 @@ def evaluate_agent_salience(world: "World", agent: Agent) -> Dict[str, Any]:
         "top_building_targets": top_building_targets,
         "top_social_targets": top_social_targets,
         "familiar_agents_nearby": familiar_agents_nearby,
+        "social_density_signal": round(density_signal, 3),
+        "cultural_memory_signal": {
+            "food_practice": round(float(food_cultural), 3),
+            "farm_practice": round(float(farm_cultural), 3),
+            "construction_practice": round(float(construction_cultural), 3),
+        },
         "salient_local_leader": salient_local_leader,
         "dominant_local_signal": dominant_local_signal,
         "current_focus": current_focus,

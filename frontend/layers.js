@@ -1,6 +1,7 @@
 const Layers = {
   toggles: {
     terrain: true,
+    grid: false,
     food: true,
     wood: true,
     stone: true,
@@ -56,6 +57,7 @@ const Layers = {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
     if (this.toggles.terrain) this.drawTerrain(ctx, data, camera, canvas);
+    if (this.toggles.grid) this.drawGrid(ctx, camera, canvas);
     if (this.toggles.village_territory) this.drawVillageTerritories(ctx, data, camera, canvas, options);
     if (this.toggles.roads) this.drawRoads(ctx, data, camera, canvas);
     this.drawResources(ctx, data, camera, canvas);
@@ -88,6 +90,26 @@ const Layers = {
         ctx.fillRect(sx * s, sy * s, s, s);
       }
     }
+  },
+
+  drawGrid(ctx, camera, canvas) {
+    const s = camera.cellSize;
+    const vw = camera.getViewWidth(canvas);
+    const vh = camera.getViewHeight(canvas);
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.06)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let x = 0; x <= vw; x += 1) {
+      const px = x * s + 0.5;
+      ctx.moveTo(px, 0);
+      ctx.lineTo(px, canvas.height);
+    }
+    for (let y = 0; y <= vh; y += 1) {
+      const py = y * s + 0.5;
+      ctx.moveTo(0, py);
+      ctx.lineTo(canvas.width, py);
+    }
+    ctx.stroke();
   },
 
   drawRoads(ctx, data, camera, canvas) {
@@ -286,6 +308,11 @@ const Layers = {
       const cy = (v.center.y - camera.y) * s;
       if (cx < -s || cy < -s || cx > canvas.width + s || cy > canvas.height + s) continue;
       const label = (v.id != null) ? `V${v.id}` : String(v.village_uid || "village");
+      const tw = ctx.measureText(label).width;
+      const bx = Math.floor(cx - (tw / 2) - 3);
+      const by = Math.floor(cy - Math.max(13, Math.floor(s * 0.6)));
+      ctx.fillStyle = "rgba(11, 16, 21, 0.72)";
+      ctx.fillRect(bx, by, Math.ceil(tw + 6), Math.max(11, Math.floor(s * 0.52)));
       ctx.fillStyle = "#0d0f10";
       ctx.fillText(label, cx + 1, cy - 1);
       ctx.fillStyle = "#f0f5fa";
@@ -327,9 +354,14 @@ const Layers = {
     const s = camera.cellSize;
     const px = (options.selectedTile.x - camera.x) * s;
     const py = (options.selectedTile.y - camera.y) * s;
-    ctx.strokeStyle = "#ffe38d";
+    ctx.fillStyle = "rgba(255, 227, 141, 0.2)";
+    ctx.fillRect(px, py, s, s);
+    ctx.strokeStyle = "#fff4be";
     ctx.lineWidth = 2;
-    ctx.strokeRect(px + 1, py + 1, s - 2, s - 2);
+    ctx.strokeRect(px + 0.5, py + 0.5, s - 1, s - 1);
+    ctx.strokeStyle = "#a56f00";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(px + 2, py + 2, Math.max(0, s - 4), Math.max(0, s - 4));
     ctx.lineWidth = 1;
   },
 
@@ -338,8 +370,12 @@ const Layers = {
     const s = camera.cellSize;
     const px = (options.hoverTile.x - camera.x) * s;
     const py = (options.hoverTile.y - camera.y) * s;
-    ctx.strokeStyle = "rgba(255,255,255,0.65)";
+    ctx.fillStyle = "rgba(150, 220, 255, 0.08)";
+    ctx.fillRect(px, py, s, s);
+    ctx.setLineDash([3, 2]);
+    ctx.strokeStyle = "rgba(185,235,255,0.95)";
     ctx.strokeRect(px + 0.5, py + 0.5, s - 1, s - 1);
+    ctx.setLineDash([]);
   },
 
   alphaColor(hex, alpha) {

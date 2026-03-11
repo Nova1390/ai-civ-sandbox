@@ -135,6 +135,37 @@ def test_observability_includes_progression_metrics() -> None:
     assert "settlement_stage_counts" in cog
 
 
+def test_nearby_existing_camp_absorption_is_recorded_for_non_mature_cluster() -> None:
+    world = _flat_world()
+    a1 = Agent(x=10, y=10, brain=None, is_player=False, player_id=None)
+    a2 = Agent(x=11, y=10, brain=None, is_player=False, player_id=None)
+    a1.hunger = 70
+    a2.hunger = 70
+    world.agents = [a1, a2]
+    world.camps = {
+        "camp-existing": {
+            "camp_id": "camp-existing",
+            "x": 13,
+            "y": 10,
+            "active": True,
+            "community_id": "pc-existing",
+            "village_uid": "",
+            "support_nearby_agents": 2,
+            "last_active_tick": 1,
+            "created_tick": 1,
+            "absence_ticks": 0,
+            "food_cache": 0,
+        }
+    }
+
+    for tick in range(1, 6):
+        world.tick = tick
+        world.update_proto_communities_and_camps()
+
+    diag = world.compute_settlement_bottleneck_snapshot()
+    assert int(diag["camp_absorption_events"]) >= 1
+
+
 def test_camp_brief_drift_does_not_immediately_deactivate() -> None:
     world = _flat_world()
     world.tick = 10

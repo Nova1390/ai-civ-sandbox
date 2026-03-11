@@ -150,6 +150,7 @@ def test_metrics_collector_contains_core_fields() -> None:
     assert "top_congested_tiles" in snapshot["cognition_society"]
     assert "camp_food_metrics" in snapshot["cognition_society"]
     assert "proto_specialization_global" in snapshot["cognition_society"]
+    assert "behavior_map_global" in snapshot["cognition_society"]
     assert "home_return_events" in snapshot["cognition_society"]["social_cohesion_global"]
 
 

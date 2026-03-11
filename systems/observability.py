@@ -160,6 +160,10 @@ class SimulationMetricsCollector:
         fatigue_samples: List[float] = []
         health_samples: List[float] = []
         happiness_samples: List[float] = []
+        familiarity_scores: List[float] = []
+        familiarity_relationships_count = 0
+        useful_memory_ages: List[int] = []
+        agent_ages: List[int] = []
         high_sleep_need_agents = 0
         high_fatigue_agents = 0
         low_health_agents = 0
@@ -190,6 +194,8 @@ class SimulationMetricsCollector:
             key=lambda item: (-float(item["social_influence"]), str(item["agent_id"])),
         )[:5]
         for a in alive_agents:
+            born_tick = int(getattr(a, "born_tick", 0))
+            agent_ages.append(max(0, int(getattr(world, "tick", 0)) - born_tick))
             role = str(getattr(a, "role", "npc"))
             if role in {"miner", "woodcutter", "builder", "hauler", "farmer"}:
                 specialists_by_role[role] += 1
@@ -224,6 +230,31 @@ class SimulationMetricsCollector:
                 low_happiness_agents += 1
             if happiness >= 70.0:
                 high_happiness_agents += 1
+            encounter_memory = getattr(a, "recent_encounters", {})
+            if isinstance(encounter_memory, dict):
+                for enc in encounter_memory.values():
+                    if not isinstance(enc, dict):
+                        continue
+                    fam = float(enc.get("familiarity_score", 0.0))
+                    if fam <= 0.0:
+                        continue
+                    familiarity_relationships_count += 1
+                    familiarity_scores.append(fam)
+            kstate_all = getattr(a, "knowledge_state", {})
+            if isinstance(kstate_all, dict):
+                for key in ("known_resource_spots", "known_camp_spots", "known_useful_buildings", "known_practices", "known_inventions"):
+                    entries = kstate_all.get(key, [])
+                    if not isinstance(entries, list):
+                        continue
+                    for entry in entries:
+                        if not isinstance(entry, dict):
+                            continue
+                        if float(entry.get("confidence", 0.0)) < 0.40:
+                            continue
+                        if float(entry.get("salience", 0.0)) < 0.45:
+                            continue
+                        learned_tick = int(entry.get("learned_tick", int(getattr(world, "tick", 0))))
+                        useful_memory_ages.append(max(0, int(getattr(world, "tick", 0)) - learned_tick))
             kstate = getattr(a, "knowledge_state", {})
             known_inv = kstate.get("known_inventions", []) if isinstance(kstate, dict) else []
             if isinstance(known_inv, list) and known_inv:
@@ -895,6 +926,13 @@ class SimulationMetricsCollector:
                 communication_diag = cds if isinstance(cds, dict) else {}
             except Exception:
                 communication_diag = {}
+        social_encounter_diag = {}
+        if hasattr(world, "compute_social_encounter_snapshot"):
+            try:
+                sed = world.compute_social_encounter_snapshot()
+                social_encounter_diag = sed if isinstance(sed, dict) else {}
+            except Exception:
+                social_encounter_diag = {}
         food_patch_diag = {}
         if hasattr(world, "compute_food_patch_snapshot"):
             try:
@@ -902,6 +940,20 @@ class SimulationMetricsCollector:
                 food_patch_diag = fpd if isinstance(fpd, dict) else {}
             except Exception:
                 food_patch_diag = {}
+        behavior_map_diag = {}
+        if hasattr(world, "compute_behavior_map_snapshot"):
+            try:
+                bmd = world.compute_behavior_map_snapshot()
+                behavior_map_diag = bmd if isinstance(bmd, dict) else {}
+            except Exception:
+                behavior_map_diag = {}
+        settlement_progression_diag = {}
+        if hasattr(world, "compute_settlement_progression_snapshot"):
+            try:
+                spd = world.compute_settlement_progression_snapshot()
+                settlement_progression_diag = spd if isinstance(spd, dict) else {}
+            except Exception:
+                settlement_progression_diag = {}
 
         snapshot = {
             "tick": int(getattr(world, "tick", 0)),
@@ -1029,8 +1081,13 @@ class SimulationMetricsCollector:
                 "house_vs_camp_population": dict(progression_diag.get("house_vs_camp_population", {})) if isinstance(progression_diag, dict) else {},
                 "early_road_suppressed_count": int(progression_diag.get("early_road_suppressed_count", 0)) if isinstance(progression_diag, dict) else 0,
                 "road_priority_deferred_reasons": dict(progression_diag.get("road_priority_deferred_reasons", {})) if isinstance(progression_diag, dict) else {},
+                "road_built_with_purpose_count": int(progression_diag.get("road_built_with_purpose_count", 0)) if isinstance(progression_diag, dict) else 0,
+                "road_build_suppressed_no_purpose": int(progression_diag.get("road_build_suppressed_no_purpose", 0)) if isinstance(progression_diag, dict) else 0,
+                "road_build_suppressed_reasons": dict(progression_diag.get("road_build_suppressed_reasons", {})) if isinstance(progression_diag, dict) else {},
                 "settlement_stage_counts": dict(progression_diag.get("settlement_stage_counts", {})) if isinstance(progression_diag, dict) else {},
                 "progression_by_village": dict(progression_diag.get("by_village", {})) if isinstance(progression_diag, dict) else {},
+                "construction_situated_diagnostics": dict(world.compute_situated_construction_snapshot()) if hasattr(world, "compute_situated_construction_snapshot") else {},
+                "settlement_bottleneck_diagnostics": dict(world.compute_settlement_bottleneck_snapshot()) if hasattr(world, "compute_settlement_bottleneck_snapshot") else {},
                 "proto_community_funnel_global": dict(proto_funnel_diag.get("global", {})) if isinstance(proto_funnel_diag, dict) else {},
                 "proto_community_funnel_by_region": dict(proto_funnel_diag.get("by_region", {})) if isinstance(proto_funnel_diag, dict) else {},
                 "camp_lifecycle_global": dict(camp_lifecycle_diag.get("global", {})) if isinstance(camp_lifecycle_diag, dict) else {},
@@ -1038,7 +1095,41 @@ class SimulationMetricsCollector:
                 "camp_targeting_diagnostics": dict(camp_targeting_diag) if isinstance(camp_targeting_diag, dict) else {},
                 "camp_food_metrics": dict(camp_food_diag) if isinstance(camp_food_diag, dict) else {},
                 "communication_knowledge_global": dict(communication_diag) if isinstance(communication_diag, dict) else {},
+                "social_encounter_global": {
+                    **(dict(social_encounter_diag) if isinstance(social_encounter_diag, dict) else {}),
+                    "familiarity_relationships_count": int(familiarity_relationships_count),
+                    "avg_familiarity_score": round(
+                        float(sum(familiarity_scores) / max(1, len(familiarity_scores))),
+                        3,
+                    ),
+                },
+                "social_proto_coordination_metrics": {
+                    "familiar_communication_bonus_applied": int((social_encounter_diag or {}).get("familiar_communication_bonus_applied", 0)),
+                    "familiar_zone_reinforcement_events": int((social_encounter_diag or {}).get("familiar_zone_reinforcement_events", 0)),
+                    "familiar_camp_support_bias_events": int((social_encounter_diag or {}).get("familiar_camp_support_bias_events", 0)),
+                    "familiar_loop_continuity_bonus": int((social_encounter_diag or {}).get("familiar_loop_continuity_bonus", 0)),
+                    "familiar_anchor_exploration_events": int((social_encounter_diag or {}).get("familiar_anchor_exploration_events", 0)),
+                    "familiar_zone_score_updates": int((social_encounter_diag or {}).get("familiar_zone_score_updates", 0)),
+                    "familiar_zone_score_decay": int((social_encounter_diag or {}).get("familiar_zone_score_decay", 0)),
+                    "familiar_zone_saturation_clamps": int((social_encounter_diag or {}).get("familiar_zone_saturation_clamps", 0)),
+                    "dense_area_social_bias_reductions": int((social_encounter_diag or {}).get("dense_area_social_bias_reductions", 0)),
+                    "familiar_zone_decay_due_to_low_payoff": int((social_encounter_diag or {}).get("familiar_zone_decay_due_to_low_payoff", 0)),
+                    "overcrowded_familiar_bias_suppressed": int((social_encounter_diag or {}).get("overcrowded_familiar_bias_suppressed", 0)),
+                    "density_safe_loop_bonus_reduced_count": int((social_encounter_diag or {}).get("density_safe_loop_bonus_reduced_count", 0)),
+                },
+                "lifespan_continuity_global": {
+                    "avg_useful_memory_age": round(float(sum(useful_memory_ages) / max(1, len(useful_memory_ages))), 3),
+                    "repeated_successful_loop_count": int((settlement_progression_diag or {}).get("repeated_successful_loop_count", 0)),
+                    "routine_persistence_ticks": int((settlement_progression_diag or {}).get("routine_persistence_ticks", 0)),
+                    "routine_abandonment_after_failure": int((settlement_progression_diag or {}).get("routine_abandonment_after_failure", 0)),
+                    "routine_abandonment_after_success": int((settlement_progression_diag or {}).get("routine_abandonment_after_success", 0)),
+                    "confirmed_memory_reinforcements": int((communication_diag or {}).get("confirmed_memory_reinforcements", 0)),
+                    "direct_memory_invalidations": int((communication_diag or {}).get("direct_memory_invalidations", 0)),
+                    "average_agent_age_alive": round(float(sum(agent_ages) / max(1, len(agent_ages))), 3),
+                },
                 "proto_specialization_global": dict(proto_specialization_diag) if isinstance(proto_specialization_diag, dict) else {},
+                "behavior_map_global": dict(behavior_map_diag) if isinstance(behavior_map_diag, dict) else {},
+                "settlement_progression_metrics": dict(settlement_progression_diag) if isinstance(settlement_progression_diag, dict) else {},
             },
             "llm_reflection": {
                 "reflection_trigger_detected_count": int(reflection_stats.get("reflection_trigger_detected_count", 0)),

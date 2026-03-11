@@ -15,6 +15,7 @@ const Renderer = {
   selectionPanel: null,
   layerToggles: null,
   statusBar: null,
+  quickStatEls: null,
 
   selectedTile: null,
   hoverTile: null,
@@ -43,6 +44,14 @@ const Renderer = {
     this.selectionPanel = document.getElementById("selectionPanel");
     this.layerToggles = document.getElementById("layerToggles");
     this.statusBar = document.getElementById("statusBar");
+    this.quickStatEls = {
+      tick: document.getElementById("qsTick"),
+      population: document.getElementById("qsPopulation"),
+      villages: document.getElementById("qsVillages"),
+      farms: document.getElementById("qsFarms"),
+      houses: document.getElementById("qsHouses"),
+      agents: document.getElementById("qsAgents"),
+    };
 
     this.bindLayerToggles();
     this.bindVillageList();
@@ -167,24 +176,33 @@ const Renderer = {
   renderStatusBar(data) {
     if (!this.statusBar) return;
     const s = State.status || {};
-    const staticPart = s.staticOk ? "static:ok" : "static:error";
-    const dynamicPart = s.dynamicOk ? "dynamic:ok" : "dynamic:error";
+    const staticPart = s.staticOk ? "ok" : "error";
+    const dynamicPart = s.dynamicOk ? "ok" : "error";
     const tick = data ? this.v(data.tick) : "-";
     const stateVersion = data ? this.v(data.state_version) : "-";
     const updated = this.formatTime(s.lastDynamicAt || s.lastStaticAt);
     const err = s.dynamicError || s.staticError || "";
 
     this.statusBar.innerHTML = [
-      `<span>${this.escapeHtml(staticPart)}</span>`,
-      `<span>${this.escapeHtml(dynamicPart)}</span>`,
-      `<span>tick: ${this.escapeHtml(tick)}</span>`,
-      `<span>state_version: ${this.escapeHtml(stateVersion)}</span>`,
-      `<span>updated: ${this.escapeHtml(updated)}</span>`,
-      `<span>${err ? `error: ${this.escapeHtml(err)}` : "error: -"}</span>`,
+      `<div class="status-tile"><div class="status-k">static</div><div class="status-v ${s.staticOk ? "ok" : "bad"}">${this.escapeHtml(staticPart)}</div></div>`,
+      `<div class="status-tile"><div class="status-k">dynamic</div><div class="status-v ${s.dynamicOk ? "ok" : "bad"}">${this.escapeHtml(dynamicPart)}</div></div>`,
+      `<div class="status-tile"><div class="status-k">tick</div><div class="status-v">${this.escapeHtml(tick)}</div></div>`,
+      `<div class="status-tile"><div class="status-k">state version</div><div class="status-v">${this.escapeHtml(stateVersion)}</div></div>`,
+      `<div class="status-tile"><div class="status-k">updated</div><div class="status-v">${this.escapeHtml(updated)}</div></div>`,
+      `<div class="status-tile"><div class="status-k">error</div><div class="status-v ${err ? "bad" : ""}">${this.escapeHtml(err || "-")}</div></div>`,
     ].join("");
   },
 
   renderSummary(data) {
+    if (this.quickStatEls) {
+      if (this.quickStatEls.tick) this.quickStatEls.tick.textContent = this.v(data.tick);
+      if (this.quickStatEls.population) this.quickStatEls.population.textContent = this.v(data.population);
+      if (this.quickStatEls.villages) this.quickStatEls.villages.textContent = this.v(data.villages_count);
+      if (this.quickStatEls.farms) this.quickStatEls.farms.textContent = this.v(data.farms_count);
+      if (this.quickStatEls.houses) this.quickStatEls.houses.textContent = this.v(data.houses_count);
+      if (this.quickStatEls.agents) this.quickStatEls.agents.textContent = this.v((data.agents || []).length);
+    }
+
     this.kvGrid(this.summaryPanel, [
       ["schema_version", this.v(data.schema_version)],
       ["state_version", this.v(data.state_version)],
@@ -273,7 +291,10 @@ const Renderer = {
   renderHoverPanel(data) {
     const tile = this.hoverTile;
     if (!tile) {
-      this.hoverPanel.textContent = "-";
+      this.hoverPanel.innerHTML = this.inspectGroup(
+        "Hover Tile",
+        this.inspectRow("status", "none"),
+      );
       return;
     }
 
@@ -287,59 +308,36 @@ const Renderer = {
     const villages = idx.villagesByTile.get(key) || [];
     const agents = idx.agentsByTile.get(key) || [];
 
-    const lines = [];
-    lines.push(`coords: (${tile.x}, ${tile.y})`);
-    lines.push(`terrain: ${terrain ?? "-"}`);
-    lines.push(`resource: ${[
+    const resourceKinds = [
       idx.foodSet.has(key) ? "food" : null,
       idx.woodSet.has(key) ? "wood" : null,
       idx.stoneSet.has(key) ? "stone" : null,
-    ].filter(Boolean).join(", ") || "none"}`);
-    lines.push(`farm: ${farm ? `${farm.state || "unknown"} growth=${this.v(farm.growth)} village_id=${this.v(farm.village_id)}` : "none"}`);
-    lines.push(`road: ${idx.roadsSet.has(key) ? "yes" : "no"}`);
-    lines.push(`legacy structure: ${idx.structuresSet.has(key) ? "yes" : "no"}`);
-    lines.push(`legacy storage: ${idx.storageLegacySet.has(key) ? "yes" : "no"}`);
+    ].filter(Boolean).join(", ") || "none";
 
-    if (buildings.length > 0) {
-      const parts = buildings.slice(0, 4).map((b) => {
-        const svc = b.service && typeof b.service === "object"
-          ? ` service(t=${this.v(b.service.transport)},l=${this.v(b.service.logistics)},e=${this.v(b.service.efficiency_multiplier)})`
-          : "";
-        const storage = b.storage ? ` storage=${JSON.stringify(b.storage)}` : "";
-        const ratio = b.construction_complete_ratio != null
-          ? ` progress=${this.v(b.construction_complete_ratio)}(${this.v(b.construction_progress)}/${this.v(b.construction_required_work)})`
-          : "";
-        return `${b.building_id || "?"} type=${b.type || "?"} cat=${b.category || "?"} tier=${this.v(b.tier)} v_id=${this.v(b.village_id)} road=${this.v(b.connected_to_road)} op=${this.v(b.operational_state)} linked=${this.v(b.linked_resource_type)} cap=${this.v(b.storage_capacity)}${ratio}${svc}${storage}`;
-      });
-      lines.push(`buildings:\n- ${parts.join("\n- ")}`);
-    } else {
-      lines.push("buildings: none");
-    }
+    const groups = [];
+    groups.push(this.inspectGroup("Tile", [
+      this.inspectRow("coordinates", `(${tile.x}, ${tile.y})`),
+      this.inspectRow("terrain", `${this.v(terrain)} (${this.terrainLabel(terrain)})`),
+      this.inspectRow("resources", resourceKinds),
+    ].join("")));
 
-    if (villages.length > 0) {
-      const owned = villages.map((v) => `${v.id != null ? `id=${v.id}` : ""} uid=${v.village_uid || "-"}`).join(" | ");
-      lines.push(`village ownership: ${owned}`);
-    } else {
-      lines.push("village ownership: none");
-    }
+    groups.push(this.inspectGroup("Overlay", [
+      this.inspectRow("farm", farm ? `${this.v(farm.state)} g=${this.v(farm.growth)} v=${this.v(farm.village_id)}` : "none"),
+      this.inspectRow("road", idx.roadsSet.has(key) ? "yes" : "no"),
+      this.inspectRow("legacy structure", idx.structuresSet.has(key) ? "yes" : "no"),
+      this.inspectRow("legacy storage", idx.storageLegacySet.has(key) ? "yes" : "no"),
+      this.inspectRow("buildings", String(buildings.length)),
+      this.inspectRow("villages", String(villages.length)),
+      this.inspectRow("agents", String(agents.length)),
+    ].join("")));
 
-    if (agents.length > 0) {
-      const who = agents.map((a) => `${a.agent_id} role=${a.role || "-"} task=${a.task || "-"}`).join(" | ");
-      lines.push(`agents: ${who}`);
-    } else {
-      lines.push("agents: none");
-    }
-
-    this.hoverPanel.textContent = lines.join("\n");
+    this.hoverPanel.innerHTML = groups.join("");
   },
 
   renderSelectionPanel(data, selectedVillage) {
-    const lines = [];
     const tile = this.selectedTile;
     if (!tile || !this.isTileInside(tile, data)) {
-      lines.push("Selected Tile");
-      lines.push("- none");
-      this.selectionPanel.textContent = lines.join("\n");
+      this.selectionPanel.innerHTML = this.inspectGroup("Selected Tile", this.inspectRow("status", "none"));
       return;
     }
 
@@ -356,101 +354,106 @@ const Renderer = {
     const villages = idx.villagesByTile.get(key) || [];
     const agents = idx.agentsByTile.get(key) || [];
 
-    lines.push("Selected Tile");
-    lines.push(`- coordinates: (${tile.x}, ${tile.y})`);
-    lines.push(`- terrain: ${this.v(terrainCode)} (${terrainLabel})`);
+    const parts = [];
+    parts.push(this.inspectGroup("Selected Tile", [
+      this.inspectRow("coordinates", `(${tile.x}, ${tile.y})`),
+    ].join("")));
 
-    lines.push("");
-    lines.push("Resources");
-    lines.push(`- food: ${idx.foodSet.has(key) ? "yes" : "no"}`);
-    lines.push(`- wood: ${idx.woodSet.has(key) ? "yes" : "no"}`);
-    lines.push(`- stone: ${idx.stoneSet.has(key) ? "yes" : "no"}`);
+    parts.push(this.inspectGroup("Terrain", [
+      this.inspectRow("code", this.v(terrainCode)),
+      this.inspectRow("label", terrainLabel),
+    ].join("")));
 
-    lines.push("");
-    lines.push("Farm");
-    if (farm) {
-      lines.push(`- exists: yes`);
-      lines.push(`- state: ${this.v(farm.state)}`);
-      lines.push(`- growth: ${this.v(farm.growth)}`);
-      lines.push(`- village_id: ${this.v(farm.village_id)}`);
-    } else {
-      lines.push("- exists: no");
-    }
+    parts.push(this.inspectGroup("Resources", [
+      this.inspectRow("food", idx.foodSet.has(key) ? "yes" : "no"),
+      this.inspectRow("wood", idx.woodSet.has(key) ? "yes" : "no"),
+      this.inspectRow("stone", idx.stoneSet.has(key) ? "yes" : "no"),
+    ].join("")));
 
-    lines.push("");
-    lines.push("Infrastructure / Legacy");
-    lines.push(`- road: ${hasRoad ? "yes" : "no"}`);
-    lines.push(`- structure: ${hasStructure ? "yes" : "no"}`);
-    lines.push(`- storage_building: ${hasStorageLegacy ? "yes" : "no"}`);
+    parts.push(this.inspectGroup("Farm", farm ? [
+      this.inspectRow("exists", "yes"),
+      this.inspectRow("state", this.v(farm.state)),
+      this.inspectRow("growth", this.v(farm.growth)),
+      this.inspectRow("village_id", this.v(farm.village_id)),
+    ].join("") : this.inspectRow("exists", "no")));
 
-    lines.push("");
-    lines.push("Buildings (canonical)");
-    if (buildings.length === 0) {
-      lines.push("- none");
-    } else {
-      for (const b of buildings) {
-        lines.push(`- building_id: ${this.v(b.building_id)}`);
-        lines.push(`  type: ${this.v(b.type)}`);
-        lines.push(`  category: ${this.v(b.category)}`);
-        lines.push(`  tier: ${this.v(b.tier)}`);
-        lines.push(`  village_id: ${this.v(b.village_id)}`);
-        lines.push(`  village_uid: ${this.v(b.village_uid)}`);
-        lines.push(`  connected_to_road: ${this.v(b.connected_to_road)}`);
-        lines.push(`  operational_state: ${this.v(b.operational_state)}`);
-        lines.push(`  linked_resource_type: ${this.v(b.linked_resource_type)}`);
-        lines.push(`  linked_resource_tiles_count: ${this.v(b.linked_resource_tiles_count)}`);
-        lines.push(`  storage: ${this.stringify(b.storage)}`);
-        lines.push(`  storage_capacity: ${this.v(b.storage_capacity)}`);
-        lines.push(`  construction_progress: ${this.v(b.construction_progress)}`);
-        lines.push(`  construction_required_work: ${this.v(b.construction_required_work)}`);
-        lines.push(`  construction_complete_ratio: ${this.v(b.construction_complete_ratio)}`);
-      }
-    }
+    parts.push(this.inspectGroup("Infrastructure", [
+      this.inspectRow("road", hasRoad ? "yes" : "no"),
+      this.inspectRow("structure", hasStructure ? "yes" : "no"),
+      this.inspectRow("storage_building", hasStorageLegacy ? "yes" : "no"),
+    ].join("")));
 
-    lines.push("");
-    lines.push("Villages");
-    if (villages.length === 0) {
-      lines.push("- none");
-    } else {
-      for (const v of villages) {
-        lines.push(`- id: ${this.v(v.id)}`);
-        lines.push(`  village_uid: ${this.v(v.village_uid)}`);
-        lines.push(`  center: ${this.stringify(v.center)}`);
-        lines.push(`  houses: ${this.v(v.houses)}`);
-        lines.push(`  population: ${this.v(v.population)}`);
-        lines.push(`  strategy: ${this.v(v.strategy)}`);
-        lines.push(`  priority: ${this.v(v.priority)}`);
-        lines.push(`  relation: ${this.v(v.relation)}`);
-        lines.push(`  power: ${this.v(v.power)}`);
-        lines.push(`  leader_id: ${this.v(v.leader_id)}`);
-        lines.push(`  target_village_id: ${this.v(v.target_village_id)}`);
-        lines.push(`  migration_target_id: ${this.v(v.migration_target_id)}`);
-        lines.push(`  storage: ${this.stringify(v.storage)}`);
-        lines.push(`  farm_zone_center: ${this.stringify(v.farm_zone_center)}`);
-        lines.push(`  metrics: ${this.stringify(v.metrics)}`);
-        lines.push(`  needs: ${this.stringify(v.needs)}`);
-        lines.push(`  phase: ${this.v(v.phase)}`);
-      }
-    }
+    const buildingItems = buildings.map((b, i) => this.inspectItem(
+      `Building ${i + 1}`,
+      [
+        this.inspectRow("building_id", this.v(b.building_id)),
+        this.inspectRow("type", this.v(b.type)),
+        this.inspectRow("category", this.v(b.category)),
+        this.inspectRow("tier", this.v(b.tier)),
+        this.inspectRow("village_id", this.v(b.village_id)),
+        this.inspectRow("village_uid", this.v(b.village_uid)),
+        this.inspectRow("connected_to_road", this.v(b.connected_to_road)),
+        this.inspectRow("operational_state", this.v(b.operational_state)),
+        this.inspectRow("linked_resource_type", this.v(b.linked_resource_type)),
+        this.inspectRow("linked_resource_tiles_count", this.v(b.linked_resource_tiles_count)),
+        this.inspectRow("storage", this.stringify(b.storage)),
+        this.inspectRow("storage_capacity", this.v(b.storage_capacity)),
+        this.inspectRow("construction_progress", this.v(b.construction_progress)),
+        this.inspectRow("construction_required_work", this.v(b.construction_required_work)),
+        this.inspectRow("construction_complete_ratio", this.v(b.construction_complete_ratio)),
+      ].join(""),
+    ));
+    parts.push(this.inspectGroup(
+      "Buildings (canonical)",
+      buildings.length > 0 ? `<div class="inspect-sublist">${buildingItems.join("")}</div>` : this.inspectRow("status", "none"),
+    ));
 
-    lines.push("");
-    lines.push("Agents");
-    if (agents.length === 0) {
-      lines.push("- none");
-    } else {
-      for (const a of agents) {
-        lines.push(`- agent_id: ${this.v(a.agent_id)}`);
-        lines.push(`  is_player: ${this.v(a.is_player)}`);
-        lines.push(`  player_id: ${this.v(a.player_id)}`);
-        lines.push(`  role: ${this.v(a.role)}`);
-        lines.push(`  village_id: ${this.v(a.village_id)}`);
-        lines.push(`  task: ${this.v(a.task)}`);
-        lines.push(`  inventory: ${this.stringify(a.inventory)}`);
-        lines.push(`  max_inventory: ${this.v(a.max_inventory)}`);
-      }
-    }
+    const villageItems = villages.map((v, i) => this.inspectItem(
+      `Village ${i + 1}`,
+      [
+        this.inspectRow("id", this.v(v.id)),
+        this.inspectRow("village_uid", this.v(v.village_uid)),
+        this.inspectRow("center", this.stringify(v.center)),
+        this.inspectRow("houses", this.v(v.houses)),
+        this.inspectRow("population", this.v(v.population)),
+        this.inspectRow("strategy", this.v(v.strategy)),
+        this.inspectRow("priority", this.v(v.priority)),
+        this.inspectRow("relation", this.v(v.relation)),
+        this.inspectRow("power", this.v(v.power)),
+        this.inspectRow("leader_id", this.v(v.leader_id)),
+        this.inspectRow("target_village_id", this.v(v.target_village_id)),
+        this.inspectRow("migration_target_id", this.v(v.migration_target_id)),
+        this.inspectRow("storage", this.stringify(v.storage)),
+        this.inspectRow("farm_zone_center", this.stringify(v.farm_zone_center)),
+        this.inspectRow("metrics", this.stringify(v.metrics)),
+        this.inspectRow("needs", this.stringify(v.needs)),
+        this.inspectRow("phase", this.v(v.phase)),
+      ].join(""),
+    ));
+    parts.push(this.inspectGroup(
+      "Village",
+      villages.length > 0 ? `<div class="inspect-sublist">${villageItems.join("")}</div>` : this.inspectRow("status", "none"),
+    ));
 
-    this.selectionPanel.textContent = lines.join("\n");
+    const agentItems = agents.map((a, i) => this.inspectItem(
+      `Agent ${i + 1}`,
+      [
+        this.inspectRow("agent_id", this.v(a.agent_id)),
+        this.inspectRow("is_player", this.v(a.is_player)),
+        this.inspectRow("player_id", this.v(a.player_id)),
+        this.inspectRow("role", this.v(a.role)),
+        this.inspectRow("village_id", this.v(a.village_id)),
+        this.inspectRow("task", this.v(a.task)),
+        this.inspectRow("inventory", this.stringify(a.inventory)),
+        this.inspectRow("max_inventory", this.v(a.max_inventory)),
+      ].join(""),
+    ));
+    parts.push(this.inspectGroup(
+      "Agents",
+      agents.length > 0 ? `<div class="inspect-sublist">${agentItems.join("")}</div>` : this.inspectRow("status", "none"),
+    ));
+
+    this.selectionPanel.innerHTML = parts.join("");
   },
 
   getSelectedVillage(data) {
@@ -504,7 +507,7 @@ const Renderer = {
   },
 
   stringify(value) {
-    if (value == null) return "null";
+    if (value == null) return "-";
     if (typeof value === "string") return value;
     try {
       return JSON.stringify(value);
@@ -524,6 +527,28 @@ const Renderer = {
 
   escapeAttr(value) {
     return this.escapeHtml(value).replaceAll("`", "");
+  },
+
+  inspectRow(key, value) {
+    return `<div class="inspect-row"><div class="inspect-key">${this.escapeHtml(key)}</div><div class="inspect-val">${this.inspectValueHtml(value)}</div></div>`;
+  },
+
+  inspectGroup(title, body) {
+    return `<div class="inspect-group"><div class="inspect-title">${this.escapeHtml(title)}</div>${body}</div>`;
+  },
+
+  inspectItem(title, body) {
+    return `<div class="inspect-item"><div class="inspect-title">${this.escapeHtml(title)}</div>${body}</div>`;
+  },
+
+  inspectValueHtml(value) {
+    const raw = value == null ? "-" : String(value);
+    const lower = raw.toLowerCase();
+    if (lower === "yes") return '<span class="inspect-badge inspect-badge--yes">yes</span>';
+    if (lower === "no") return '<span class="inspect-badge inspect-badge--no">no</span>';
+    if (lower === "none" || lower === "-") return `<span class="inspect-badge">${this.escapeHtml(raw)}</span>`;
+    if (raw.length <= 22) return `<span class="inspect-badge inspect-badge--value">${this.escapeHtml(raw)}</span>`;
+    return this.escapeHtml(raw);
   },
 
   terrainLabel(code) {

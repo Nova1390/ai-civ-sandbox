@@ -31,6 +31,34 @@ def _active_camp(*, x: int = 8, y: int = 8, food_cache: int = 0) -> dict:
     }
 
 
+def _active_house(*, building_id: str = "house-001", x: int = 8, y: int = 8, domestic_food: int = 0, capacity: int = 4) -> dict:
+    return {
+        "building_id": str(building_id),
+        "type": "house",
+        "x": int(x),
+        "y": int(y),
+        "operational_state": "active",
+        "village_id": None,
+        "village_uid": "",
+        "domestic_food": int(domestic_food),
+        "domestic_food_capacity": int(capacity),
+    }
+
+
+def _active_storage(*, building_id: str = "storage-001", x: int = 8, y: int = 8, food: int = 0, capacity: int = 50) -> dict:
+    return {
+        "building_id": str(building_id),
+        "type": "storage",
+        "x": int(x),
+        "y": int(y),
+        "operational_state": "active",
+        "village_id": None,
+        "village_uid": "",
+        "storage": {"food": int(food), "wood": 0, "stone": 0},
+        "storage_capacity": int(capacity),
+    }
+
+
 def test_agent_can_deposit_food_to_nearby_camp() -> None:
     world = _world()
     world.camps["camp-001"] = _active_camp(food_cache=0)
@@ -100,6 +128,86 @@ def test_agent_can_consume_from_nearby_camp_before_critical_threshold() -> None:
     ate = agent.eat_if_needed(world)
     assert ate is True
     assert int(world.camps["camp-001"].get("food_cache", 0)) == 1
+
+
+def test_agent_can_deposit_food_to_nearby_house_buffer() -> None:
+    world = _world()
+    world.buildings["house-001"] = _active_house(domestic_food=0, capacity=4)
+    agent = Agent(x=8, y=8, brain=None, is_player=False, player_id=None)
+    agent.hunger = 80.0
+    agent.inventory["food"] = 1
+
+    moved = world.try_deposit_food_to_nearby_house(agent, amount=1, hunger_before=80.0)
+    snap = world.compute_camp_food_snapshot()
+    assert moved == 1
+    assert int(world.buildings["house-001"].get("domestic_food", 0)) == 1
+    assert int(snap["domestic_food_stored_total"]) == 1
+
+
+def test_agent_can_consume_from_nearby_house_buffer() -> None:
+    world = _world()
+    world.buildings["house-001"] = _active_house(domestic_food=2, capacity=4)
+    agent = Agent(x=8, y=8, brain=None, is_player=False, player_id=None)
+    agent.hunger = 40.0
+
+    ate = agent.eat_if_needed(world)
+    snap = world.compute_camp_food_snapshot()
+    assert ate is True
+    assert int(world.buildings["house-001"].get("domestic_food", 0)) == 1
+    assert int(snap["domestic_food_consumed_total"]) >= 1
+
+
+def test_house_food_capacity_is_respected() -> None:
+    world = _world()
+    world.buildings["house-001"] = _active_house(domestic_food=4, capacity=4)
+    agent = Agent(x=8, y=8, brain=None, is_player=False, player_id=None)
+    agent.hunger = 80.0
+    agent.inventory["food"] = 2
+
+    moved = world.try_deposit_food_to_nearby_house(agent, amount=2, hunger_before=80.0)
+    snap = world.compute_camp_food_snapshot()
+    assert moved == 0
+    assert int(world.buildings["house-001"].get("domestic_food", 0)) == 4
+    assert int(snap["domestic_storage_full_events"]) >= 1
+
+
+def test_domestic_storage_does_not_bypass_starvation_rules() -> None:
+    world = _world()
+    world.buildings["house-001"] = _active_house(domestic_food=0, capacity=4)
+    agent = Agent(x=8, y=8, brain=None, is_player=False, player_id=None)
+    agent.hunger = 15.0
+    agent.inventory["food"] = 1
+
+    moved = world.try_deposit_food_to_nearby_house(agent, amount=1, hunger_before=15.0)
+    assert moved == 0
+    assert int(agent.inventory.get("food", 0)) == 1
+
+
+def test_local_buffer_priority_prefers_house_before_camp() -> None:
+    world = _world()
+    world.buildings["house-001"] = _active_house(domestic_food=0, capacity=4)
+    world.camps["camp-001"] = _active_camp(food_cache=0)
+    agent = Agent(x=8, y=8, brain=None, is_player=False, player_id=None)
+    agent.hunger = 80.0
+    agent.inventory["food"] = 1
+
+    moved = world.try_deposit_food_to_local_buffers(agent, amount=1, hunger_before=80.0)
+    assert moved == 1
+    assert int(world.buildings["house-001"].get("domestic_food", 0)) == 1
+    assert int(world.camps["camp-001"].get("food_cache", 0)) == 0
+
+
+def test_storage_fallback_used_when_domestic_capacity_saturated() -> None:
+    world = _world()
+    world.buildings["house-001"] = _active_house(domestic_food=4, capacity=4)
+    world.buildings["storage-001"] = _active_storage(food=0, capacity=20)
+    agent = Agent(x=8, y=8, brain=None, is_player=False, player_id=None)
+    agent.hunger = 80.0
+    agent.inventory["food"] = 2
+
+    moved = world.try_deposit_food_to_local_buffers(agent, amount=1, hunger_before=80.0)
+    assert moved == 1
+    assert int(world.buildings["storage-001"]["storage"].get("food", 0)) == 1
 
 
 def test_camp_food_cache_respects_capacity() -> None:
