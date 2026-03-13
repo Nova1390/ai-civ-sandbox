@@ -3164,6 +3164,24 @@ def run_hauler_construction_delivery(world: "World", agent: "Agent") -> bool:
         site["construction_delivered_units"] = int(site.get("construction_delivered_units", 0)) + int(fulfilled)
     if str(site.get("type", "")) == "storage" and hasattr(world, "record_settlement_progression_metric"):
         world.record_settlement_progression_metric("storage_material_delivery_events", int(fulfilled))
+
+    # Delivery handoff can activate construction progress when a builder is actually involved.
+    # Completion still requires full material readiness; this only prevents a dead pipeline where
+    # deliveries happen but progress never starts.
+    site_type = str(site.get("type", ""))
+    if site_type in {"house", "storage"} and can_agent_work_on_construction(agent, site):
+        costs = _construction_costs(site_type)
+        if not _site_work_complete(site):
+            _advance_construction_progress(site)
+            site["construction_last_progress_tick"] = int(getattr(world, "tick", 0))
+            site["construction_progress_active_ticks"] = int(site.get("construction_progress_active_ticks", 0)) + 1
+            if hasattr(world, "record_settlement_progression_metric"):
+                world.record_settlement_progression_metric("construction_progress_ticks")
+                if site_type == "storage":
+                    world.record_settlement_progression_metric("storage_construction_progress_ticks")
+        if _site_work_complete(site) and _site_ready_for_completion(site, costs):
+            if _use_construction_buffer(site, costs):
+                _complete_construction_site(world, site)
     return True
 
 

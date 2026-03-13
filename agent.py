@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import random
 import uuid
 
+import systems.building_system as building_system
+
 from config import (
     FOOD_EAT_GAIN,
     AGENT_START_HUNGER,
@@ -1680,6 +1682,12 @@ class Agent:
                 world.record_local_practice("construction_cluster", x=int(self.x), y=int(self.y), weight=0.9, decay_rate=0.0055)
                 world.record_local_practice("stable_storage_area", x=int(self.x), y=int(self.y), weight=0.8, decay_rate=0.005)
             if not built:
+                inv_wood = int(self.inventory.get("wood", 0))
+                inv_stone = int(self.inventory.get("stone", 0))
+                if not withdrew and (inv_wood < int(getattr(building_system, "STORAGE_WOOD_COST", 4)) or inv_stone < int(getattr(building_system, "STORAGE_STONE_COST", 2))):
+                    self.task = "gather_materials"
+                    if hasattr(world, "record_assignment_pipeline_block_reason"):
+                        world.record_assignment_pipeline_block_reason(self, "builder", "materials_not_ready")
                 if village is not None:
                     storage = village.get("storage", {})
                     has_active_site = False
@@ -1723,6 +1731,13 @@ class Agent:
                 active_work_performed = True
             if built_house and hasattr(world, "record_local_practice"):
                 world.record_local_practice("construction_cluster", x=int(self.x), y=int(self.y), weight=0.75, decay_rate=0.0055)
+            if not built_house:
+                inv_wood = int(self.inventory.get("wood", 0))
+                inv_stone = int(self.inventory.get("stone", 0))
+                if not withdrew and (inv_wood < int(HOUSE_WOOD_COST) or inv_stone < int(HOUSE_STONE_COST)):
+                    self.task = "gather_materials"
+                    if hasattr(world, "record_assignment_pipeline_block_reason"):
+                        world.record_assignment_pipeline_block_reason(self, "builder", "materials_not_ready")
 
         elif self.task == "build_road":
             # per ora la strada emerge dal movimento
@@ -1732,6 +1747,22 @@ class Agent:
             # builder in attesa di materiali
             if hasattr(world, "record_assignment_pipeline_stage"):
                 world.record_assignment_pipeline_stage(self, "builder", "action_attempted_count")
+            delivered = False
+            if int(self.inventory.get("wood", 0)) + int(self.inventory.get("stone", 0)) + int(self.inventory.get("food", 0)) > 0:
+                try:
+                    delivered = bool(building_system.run_hauler_construction_delivery(world, self))
+                except Exception:
+                    delivered = False
+            if delivered:
+                self._add_work_fatigue(0.08)
+                active_work_performed = True
+                if hasattr(world, "record_behavior_activity"):
+                    world.record_behavior_activity("construction_delivery", x=int(self.x), y=int(self.y), agent=self)
+            if delivered or (int(self.inventory.get("wood", 0)) + int(self.inventory.get("stone", 0)) + int(self.inventory.get("food", 0)) > 0):
+                if hasattr(world, "has_active_storage_construction_for_agent") and bool(world.has_active_storage_construction_for_agent(self)):
+                    self.task = "build_storage"
+                elif hasattr(world, "has_active_construction_for_agent") and bool(world.has_active_construction_for_agent(self)):
+                    self.task = "build_house"
             if hasattr(world, "record_assignment_pipeline_block_reason"):
                 world.record_assignment_pipeline_block_reason(self, "builder", "no_task_candidate")
 
@@ -1739,7 +1770,6 @@ class Agent:
             if hasattr(world, "record_assignment_pipeline_stage"):
                 world.record_assignment_pipeline_stage(self, "hauler", "action_attempted_count")
             try:
-                import systems.building_system as building_system
                 delivered = building_system.run_hauler_construction_delivery(world, self)
                 redistributed = False if delivered else building_system.run_hauler_internal_redistribution(world, self)
                 transfer_active = bool(getattr(building_system, "has_active_internal_transfer", lambda *_: False)(self))
@@ -1766,7 +1796,6 @@ class Agent:
             if hasattr(world, "record_assignment_pipeline_stage"):
                 world.record_assignment_pipeline_stage(self, "hauler", "action_attempted_count")
             try:
-                import systems.building_system as building_system
                 delivered = building_system.run_hauler_construction_delivery(world, self)
                 redistributed = False if delivered else building_system.run_hauler_internal_redistribution(world, self)
                 transfer_active = bool(getattr(building_system, "has_active_internal_transfer", lambda *_: False)(self))

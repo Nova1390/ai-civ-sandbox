@@ -5940,12 +5940,69 @@ class World:
             return 0
         site["construction_buffer"] = buf
         site["construction_last_demand_tick"] = int(getattr(self, "tick", 0))
+        site_dist = abs(int(agent.x) - int(site.get("x", 0))) + abs(int(agent.y) - int(site.get("y", 0)))
+        self.record_settlement_progression_metric("construction_delivery_attempts", 1)
+        self.record_settlement_progression_metric("construction_delivery_successes", 1)
+        self.record_settlement_progression_metric("construction_delivery_to_site_events", 1)
+        self.record_settlement_progression_metric("construction_delivery_distance_to_site_sum", int(site_dist))
+        self.record_settlement_progression_metric("construction_delivery_distance_to_site_samples", 1)
+        self.record_settlement_progression_metric("construction_delivery_distance_to_source_sum", 0)
+        self.record_settlement_progression_metric("construction_delivery_distance_to_source_samples", 1)
         self.record_settlement_progression_metric("construction_material_delivery_events", int(moved))
         progress = int(site.get("construction_progress", 0))
         if progress > 0 or int(site.get("builder_waiting_tick", -10_000)) >= int(getattr(self, "tick", 0)) - 24:
             self.record_settlement_progression_metric("construction_material_delivery_to_active_site", int(moved))
         if str(site.get("type", "")) == "storage":
+            self.record_settlement_progression_metric("storage_delivery_successes")
+        elif str(site.get("type", "")) == "house":
+            self.record_settlement_progression_metric("house_delivery_successes")
+        site["construction_delivered_units"] = int(site.get("construction_delivered_units", 0)) + int(moved)
+        if str(site.get("type", "")) == "storage":
             self.record_settlement_progression_metric("storage_material_delivery_events", int(moved))
+
+        # Immediate on-site handoff activation: once materials are delivered on-site,
+        # allow construction work to advance and complete when requirements are met.
+        site_type = str(site.get("type", ""))
+        if site_type in {"house", "storage"} and hasattr(building_system, "can_agent_work_on_construction"):
+            try:
+                can_work = bool(building_system.can_agent_work_on_construction(agent, site))
+            except Exception:
+                can_work = False
+            if can_work:
+                try:
+                    costs = building_system._construction_costs(site_type)  # type: ignore[attr-defined]
+                except Exception:
+                    costs = {"wood": 0, "stone": 0, "food": 0}
+                try:
+                    work_complete = bool(building_system._site_work_complete(site))  # type: ignore[attr-defined]
+                except Exception:
+                    work_complete = True
+                if not work_complete:
+                    try:
+                        building_system._advance_construction_progress(site)  # type: ignore[attr-defined]
+                        site["construction_last_progress_tick"] = int(getattr(self, "tick", 0))
+                        site["construction_progress_active_ticks"] = int(site.get("construction_progress_active_ticks", 0)) + 1
+                        self.record_settlement_progression_metric("construction_progress_ticks")
+                        if site_type == "storage":
+                            self.record_settlement_progression_metric("storage_construction_progress_ticks")
+                    except Exception:
+                        pass
+                try:
+                    work_complete = bool(building_system._site_work_complete(site))  # type: ignore[attr-defined]
+                    ready = bool(building_system._site_ready_for_completion(site, costs))  # type: ignore[attr-defined]
+                except Exception:
+                    work_complete = False
+                    ready = False
+                if work_complete and ready:
+                    try:
+                        consumed = bool(building_system._use_construction_buffer(site, costs))  # type: ignore[attr-defined]
+                    except Exception:
+                        consumed = False
+                    if consumed:
+                        try:
+                            building_system._complete_construction_site(self, site)  # type: ignore[attr-defined]
+                        except Exception:
+                            pass
         return int(moved)
 
     def update_settlement_progression_metrics(self) -> None:

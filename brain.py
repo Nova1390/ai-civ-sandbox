@@ -1310,6 +1310,24 @@ class FoodBrain:
             village = world.get_village_by_id(getattr(agent, "village_id", None))
             needs = village.get("needs", {}) if village else {}
             wallet = village.get("storage", {}) if village else {"wood": 0, "stone": 0}
+            carrying_materials = int(agent.inventory.get("wood", 0)) + int(agent.inventory.get("stone", 0)) + int(agent.inventory.get("food", 0))
+
+            if carrying_materials > 0:
+                delivery_target = getattr(agent, "delivery_target_building_id", None)
+                if delivery_target is not None:
+                    site = getattr(world, "buildings", {}).get(str(delivery_target))
+                    if (
+                        isinstance(site, dict)
+                        and str(site.get("operational_state", "")) == "under_construction"
+                        and (
+                            getattr(agent, "village_id", None) is None
+                            or site.get("village_id") == getattr(agent, "village_id", None)
+                        )
+                    ):
+                        return self.move_towards(agent, world, (int(site.get("x", agent.x)), int(site.get("y", agent.y))))
+                handoff_target = _nearest_under_construction_site_with_needs()
+                if handoff_target is not None:
+                    return self.move_towards(agent, world, handoff_target)
 
             if needs.get("need_storage") or needs.get("need_housing") or needs.get("need_materials"):
                 if wallet.get("wood", 0) < 4:

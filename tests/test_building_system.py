@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from agent import Agent
+from brain import FoodBrain
 from config import HOUSE_STONE_COST, HOUSE_WOOD_COST
 import systems.building_system as building_system
 import systems.role_system as role_system
@@ -2515,6 +2516,9 @@ def test_direct_local_material_drop_to_construction_updates_throughput_metrics()
     snap = world.compute_settlement_progression_snapshot()
     assert int(snap["construction_material_delivery_events"]) >= moved
     assert int(snap["construction_material_delivery_to_active_site"]) >= moved
+    assert int(snap["construction_delivery_attempts"]) >= 1
+    assert int(snap["construction_delivery_successes"]) >= 1
+    assert int(snap["construction_delivery_to_site_events"]) >= 1
 
 
 def test_material_drift_metric_records_storage_deposit_while_construction_active() -> None:
@@ -2546,6 +2550,37 @@ def test_material_drift_metric_records_storage_deposit_while_construction_active
     assert building_system.deposit_agent_inventory_to_storage(world, hauler) is True
     snap = world.compute_settlement_progression_snapshot()
     assert int(snap["construction_material_delivery_drift_events"]) >= 1
+
+
+def test_builder_gather_materials_task_hands_off_to_active_site() -> None:
+    world = _flat_grass_world()
+    village = _village(village_id=1, uid="v-000001", tier=1, population=10, houses=4, center_x=12, center_y=12)
+    world.villages = [village]
+    site = building_system.place_building(
+        world,
+        "house",
+        (12, 12),
+        village_id=1,
+        village_uid=village["village_uid"],
+        operational_state="under_construction",
+        construction_request={"wood_needed": HOUSE_WOOD_COST, "wood_reserved": 0, "stone_needed": HOUSE_STONE_COST, "stone_reserved": 0, "food_needed": 0, "food_reserved": 0},
+        construction_buffer={"wood": 0, "stone": 0, "food": 0},
+        construction_progress=0,
+        construction_required_work=4,
+    )
+    assert site is not None
+    builder = Agent(x=12, y=11, brain=FoodBrain(), is_player=False, player_id=None)
+    builder.village_id = 1
+    builder.role = "builder"
+    builder.task = "gather_materials"
+    builder.inventory["wood"] = 2
+    world.agents = [builder]
+
+    builder.update(world)
+    snap = world.compute_settlement_progression_snapshot()
+    assert int(snap["construction_delivery_attempts"]) >= 1
+    assert int(snap["construction_delivery_successes"]) >= 1
+    assert int(snap["construction_material_delivery_events"]) >= 1
 
 
 def test_surplus_storage_attempt_and_abandon_metrics_update() -> None:
