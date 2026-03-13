@@ -2204,6 +2204,13 @@ def _mark_builder_waiting_on_site(world: "World", building: Dict[str, Any], agen
         world.record_delivery_pipeline_stage(agent, "delivery_target_created_count", role="builder")
     if hasattr(world, "record_settlement_progression_metric"):
         world.record_settlement_progression_metric("construction_progress_stalled_ticks")
+        world.record_settlement_progression_metric("construction_site_starved_cycles")
+        btype = str(building.get("type", ""))
+        if btype == "storage":
+            world.record_settlement_progression_metric("storage_waiting_for_material_ticks")
+        elif btype == "house":
+            world.record_settlement_progression_metric("house_waiting_for_material_ticks")
+    building["construction_starved_cycles"] = int(building.get("construction_starved_cycles", 0)) + 1
 
 
 def _mark_construction_site_demand_tick(world: "World", building: Dict[str, Any]) -> None:
@@ -2526,6 +2533,12 @@ def _create_construction_site(
         construction_required_work=_construction_required_work(building_type),
     )
     if isinstance(site, dict):
+        now_tick = int(getattr(world, "tick", 0))
+        site["construction_created_tick"] = now_tick
+        site["construction_last_progress_tick"] = now_tick
+        site["construction_progress_active_ticks"] = 0
+        site["construction_starved_cycles"] = 0
+        site["construction_delivered_units"] = 0
         _mark_construction_site_demand_tick(world, site)
         if hasattr(world, "record_settlement_progression_metric"):
             world.record_settlement_progression_metric("construction_sites_created")
@@ -2548,6 +2561,43 @@ def _create_construction_site(
     return site
 
 
+def _record_site_lifecycle_metrics(world: "World", building: Dict[str, Any], *, outcome: str) -> None:
+    if not isinstance(building, dict) or not hasattr(world, "record_settlement_progression_metric"):
+        return
+    now_tick = int(getattr(world, "tick", 0))
+    created_tick = int(building.get("construction_created_tick", now_tick))
+    lifetime = max(0, now_tick - created_tick)
+    progress = int(building.get("construction_progress", 0))
+    delivered_units = int(building.get("construction_delivered_units", 0))
+    missing_units = 0
+    try:
+        needs = get_outstanding_construction_needs(building)
+    except Exception:
+        needs = {}
+    if isinstance(needs, dict):
+        missing_units = int(needs.get("wood", 0)) + int(needs.get("stone", 0)) + int(needs.get("food", 0))
+
+    world.record_settlement_progression_metric("construction_site_lifetime_ticks_total", lifetime)
+    world.record_settlement_progression_metric("construction_site_lifetime_samples", 1)
+    world.record_settlement_progression_metric("construction_site_material_units_delivered_total", max(0, delivered_units))
+    world.record_settlement_progression_metric("construction_site_material_units_missing_total", max(0, missing_units))
+    world.record_settlement_progression_metric("construction_site_material_units_missing_samples", 1)
+
+    btype = str(building.get("type", ""))
+    if str(outcome) == "completed":
+        world.record_settlement_progression_metric("construction_site_completion_time_total", lifetime)
+        world.record_settlement_progression_metric("construction_site_completion_time_samples", 1)
+        if btype == "house":
+            world.record_settlement_progression_metric("house_completion_time_total", lifetime)
+            world.record_settlement_progression_metric("house_completion_time_samples", 1)
+        elif btype == "storage":
+            world.record_settlement_progression_metric("storage_completion_time_total", lifetime)
+            world.record_settlement_progression_metric("storage_completion_time_samples", 1)
+    elif str(outcome) == "abandoned":
+        world.record_settlement_progression_metric("construction_site_progress_before_abandon_total", max(0, progress))
+        world.record_settlement_progression_metric("construction_site_progress_before_abandon_samples", 1)
+
+
 def _complete_construction_site(world: "World", building: Dict[str, Any]) -> None:
     btype = str(building.get("type", ""))
     village_uid = str(building.get("village_uid", "") or "")
@@ -2561,6 +2611,7 @@ def _complete_construction_site(world: "World", building: Dict[str, Any]) -> Non
         )
     if hasattr(world, "record_settlement_progression_metric"):
         world.record_settlement_progression_metric("construction_completion_events")
+    _record_site_lifecycle_metrics(world, building, outcome="completed")
     building["operational_state"] = "active"
     building.pop("construction_request", None)
     building.pop("construction_buffer", None)
@@ -2668,6 +2719,7 @@ def clear_stale_construction_sites(world: "World", *, stale_ticks: int = CONSTRU
 
     def _record_abandonment_metrics(b: Dict[str, Any]) -> None:
         b_type = str(b.get("type", ""))
+        _record_site_lifecycle_metrics(world, b, outcome="abandoned")
         if b_type == "storage" and hasattr(world, "record_settlement_progression_metric"):
             world.record_settlement_progression_metric("storage_construction_abandoned_count")
             village = None
@@ -2787,6 +2839,16 @@ def run_hauler_construction_delivery(world: "World", agent: "Agent") -> bool:
     def _delivery_fail(reason: str, *, role: Optional[str] = None, village_uid: Optional[str] = None) -> None:
         if hasattr(world, "record_delivery_pipeline_failure"):
             world.record_delivery_pipeline_failure(agent, reason, role=role, village_uid=village_uid)
+        if hasattr(world, "record_settlement_progression_metric"):
+            world.record_settlement_progression_metric("construction_delivery_failures")
+            if str(reason) in {"no_delivery_target", "site_not_in_range", "site_invalidated"}:
+                world.record_settlement_progression_metric("construction_delivery_to_wrong_target_or_drift")
+        target_site = getattr(world, "buildings", {}).get(str(getattr(agent, "delivery_target_building_id", "") or ""))
+        if isinstance(target_site, dict) and hasattr(world, "record_settlement_progression_metric"):
+            if str(target_site.get("type", "")) == "storage":
+                world.record_settlement_progression_metric("storage_delivery_failures")
+            elif str(target_site.get("type", "")) == "house":
+                world.record_settlement_progression_metric("house_delivery_failures")
 
     if str(getattr(agent, "role", "")) == "hauler" and hasattr(world, "record_task_completion_attempt"):
         world.record_task_completion_attempt(agent, "construction_delivery")
@@ -2980,6 +3042,10 @@ def run_hauler_construction_delivery(world: "World", agent: "Agent") -> bool:
                     world.record_task_completion_preconditions_failed(agent, "construction_delivery", "no_resource_available")
             return False
         _delivery_stage("resource_source_found_count", village_uid=village_uid)
+        if hasattr(world, "record_settlement_progression_metric"):
+            source_dist = _distance((agent.x, agent.y), (int(source_storage.get("x", 0)), int(source_storage.get("y", 0))))
+            world.record_settlement_progression_metric("construction_delivery_distance_to_source_sum", int(source_dist))
+            world.record_settlement_progression_metric("construction_delivery_distance_to_source_samples", 1)
         taken = _withdraw_resource_from_storage(
             world,
             agent,
@@ -3030,6 +3096,11 @@ def run_hauler_construction_delivery(world: "World", agent: "Agent") -> bool:
 
     deliver_amount = min(carrying, reserved_amount)
     _delivery_stage("delivery_attempt_count", village_uid=village_uid)
+    if hasattr(world, "record_settlement_progression_metric"):
+        site_dist = _distance((agent.x, agent.y), (sx, sy))
+        world.record_settlement_progression_metric("construction_delivery_attempts", 1)
+        world.record_settlement_progression_metric("construction_delivery_distance_to_site_sum", int(site_dist))
+        world.record_settlement_progression_metric("construction_delivery_distance_to_site_samples", 1)
     if site_is_house:
         _record_housing_stage(
             world,
@@ -3056,6 +3127,13 @@ def run_hauler_construction_delivery(world: "World", agent: "Agent") -> bool:
         world.record_task_completion_preconditions_met(agent, "construction_delivery")
         world.record_task_completion_productive(agent, "construction_delivery")
     _delivery_stage("delivery_success_count", village_uid=village_uid)
+    if hasattr(world, "record_settlement_progression_metric"):
+        world.record_settlement_progression_metric("construction_delivery_successes", 1)
+        world.record_settlement_progression_metric("construction_delivery_to_site_events", 1)
+        if str(site.get("type", "")) == "storage":
+            world.record_settlement_progression_metric("storage_delivery_successes")
+        elif str(site.get("type", "")) == "house":
+            world.record_settlement_progression_metric("house_delivery_successes")
     if site_is_house:
         _record_housing_stage(
             world,
@@ -3083,6 +3161,7 @@ def run_hauler_construction_delivery(world: "World", agent: "Agent") -> bool:
         world.record_settlement_progression_metric("construction_material_delivery_events", int(fulfilled))
         if int(site.get("construction_progress", 0)) > 0 or _site_has_recent_builder_wait_signal(world, site):
             world.record_settlement_progression_metric("construction_material_delivery_to_active_site", int(fulfilled))
+        site["construction_delivered_units"] = int(site.get("construction_delivered_units", 0)) + int(fulfilled)
     if str(site.get("type", "")) == "storage" and hasattr(world, "record_settlement_progression_metric"):
         world.record_settlement_progression_metric("storage_material_delivery_events", int(fulfilled))
     return True
@@ -3583,6 +3662,8 @@ def try_build_house(world: "World", agent: "Agent") -> bool:
     if hasattr(world, "record_situated_construction_event"):
         world.record_situated_construction_event("construction_on_site_work_ticks")
     _advance_construction_progress(site)
+    site["construction_last_progress_tick"] = int(getattr(world, "tick", 0))
+    site["construction_progress_active_ticks"] = int(site.get("construction_progress_active_ticks", 0)) + 1
     if hasattr(world, "record_settlement_progression_metric"):
         world.record_settlement_progression_metric("construction_progress_ticks")
     _record_housing_stage(
@@ -3760,6 +3841,8 @@ def try_build_storage(world: "World", agent: "Agent") -> bool:
     if hasattr(world, "record_situated_construction_event"):
         world.record_situated_construction_event("construction_on_site_work_ticks")
     _advance_construction_progress(site)
+    site["construction_last_progress_tick"] = int(getattr(world, "tick", 0))
+    site["construction_progress_active_ticks"] = int(site.get("construction_progress_active_ticks", 0)) + 1
     if hasattr(world, "record_settlement_progression_metric"):
         world.record_settlement_progression_metric("construction_progress_ticks")
     if hasattr(world, "record_settlement_progression_metric"):

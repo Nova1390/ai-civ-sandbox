@@ -748,6 +748,75 @@ def aggregate_global_balance_results(
     storage_attempts = _collect(("metrics", "camp_proto", "material_feasibility_metrics", "storage_attempts"))
     storage_completed_count = _collect(("metrics", "camp_proto", "material_feasibility_metrics", "storage_completed_count"))
     storage_completion_rate = _collect(("metrics", "camp_proto", "material_feasibility_metrics", "storage_completion_rate"))
+    construction_delivery_attempts = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "construction_delivery_attempts")
+    )
+    construction_delivery_successes = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "construction_delivery_successes")
+    )
+    construction_delivery_failures = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "construction_delivery_failures")
+    )
+    construction_delivery_to_site_events = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "construction_delivery_to_site_events")
+    )
+    construction_delivery_to_wrong_target_or_drift = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "construction_delivery_to_wrong_target_or_drift")
+    )
+    construction_delivery_avg_distance_to_site = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "construction_delivery_avg_distance_to_site")
+    )
+    construction_delivery_avg_distance_to_source = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "construction_delivery_avg_distance_to_source")
+    )
+    storage_delivery_failures = _collect(("metrics", "camp_proto", "material_feasibility_metrics", "storage_delivery_failures"))
+    house_delivery_failures = _collect(("metrics", "camp_proto", "material_feasibility_metrics", "house_delivery_failures"))
+    storage_delivery_successes = _collect(("metrics", "camp_proto", "material_feasibility_metrics", "storage_delivery_successes"))
+    house_delivery_successes = _collect(("metrics", "camp_proto", "material_feasibility_metrics", "house_delivery_successes"))
+    construction_site_waiting_for_material_ticks = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "construction_site_waiting_for_material_ticks")
+    )
+    construction_site_waiting_for_builder_ticks = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "construction_site_waiting_for_builder_ticks")
+    )
+    construction_site_waiting_total_ticks = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "construction_site_waiting_total_ticks")
+    )
+    construction_site_progress_active_ticks = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "construction_site_progress_active_ticks")
+    )
+    construction_site_starved_cycles = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "construction_site_starved_cycles")
+    )
+    storage_waiting_for_material_ticks = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "storage_waiting_for_material_ticks")
+    )
+    house_waiting_for_material_ticks = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "house_waiting_for_material_ticks")
+    )
+    storage_waiting_for_builder_ticks = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "storage_waiting_for_builder_ticks")
+    )
+    house_waiting_for_builder_ticks = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "house_waiting_for_builder_ticks")
+    )
+    construction_site_lifetime_ticks_avg = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "construction_site_lifetime_ticks_avg")
+    )
+    construction_site_progress_before_abandon_avg = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "construction_site_progress_before_abandon_avg")
+    )
+    construction_site_material_units_delivered_avg = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "construction_site_material_units_delivered_avg")
+    )
+    construction_site_material_units_missing_avg = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "construction_site_material_units_missing_avg")
+    )
+    construction_site_completion_time_avg = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "construction_site_completion_time_avg")
+    )
+    house_completion_time_avg = _collect(("metrics", "camp_proto", "material_feasibility_metrics", "house_completion_time_avg"))
+    storage_completion_time_avg = _collect(("metrics", "camp_proto", "material_feasibility_metrics", "storage_completion_time_avg"))
 
     avg_final_population_value = float(mean(final_pop)) if final_pop else 0.0
     avg_confirmed_memory_reinforcements_value = float(mean(confirmed_memory_reinforcements)) if confirmed_memory_reinforcements else 0.0
@@ -1030,5 +1099,68 @@ def aggregate_global_balance_results(
             "avg_storage_attempts": float(mean(storage_attempts)) if storage_attempts else 0.0,
             "avg_storage_completed_count": float(mean(storage_completed_count)) if storage_completed_count else 0.0,
             "avg_storage_completion_rate": float(mean(storage_completion_rate)) if storage_completion_rate else 0.0,
+            "avg_construction_delivery_attempts": float(mean(construction_delivery_attempts)) if construction_delivery_attempts else 0.0,
+            "avg_construction_delivery_successes": float(mean(construction_delivery_successes)) if construction_delivery_successes else 0.0,
+            "avg_construction_delivery_failures": float(mean(construction_delivery_failures)) if construction_delivery_failures else 0.0,
+            "avg_construction_delivery_to_site_events": float(
+                mean(construction_delivery_to_site_events)
+            ) if construction_delivery_to_site_events else 0.0,
+            "avg_construction_delivery_to_wrong_target_or_drift": float(
+                mean(construction_delivery_to_wrong_target_or_drift)
+            ) if construction_delivery_to_wrong_target_or_drift else 0.0,
+            "avg_construction_delivery_avg_distance_to_site": float(
+                mean(construction_delivery_avg_distance_to_site)
+            ) if construction_delivery_avg_distance_to_site else 0.0,
+            "avg_construction_delivery_avg_distance_to_source": float(
+                mean(construction_delivery_avg_distance_to_source)
+            ) if construction_delivery_avg_distance_to_source else 0.0,
+            "avg_storage_delivery_failures": float(mean(storage_delivery_failures)) if storage_delivery_failures else 0.0,
+            "avg_house_delivery_failures": float(mean(house_delivery_failures)) if house_delivery_failures else 0.0,
+            "avg_storage_delivery_successes": float(mean(storage_delivery_successes)) if storage_delivery_successes else 0.0,
+            "avg_house_delivery_successes": float(mean(house_delivery_successes)) if house_delivery_successes else 0.0,
+            "avg_construction_site_waiting_for_material_ticks": float(
+                mean(construction_site_waiting_for_material_ticks)
+            ) if construction_site_waiting_for_material_ticks else 0.0,
+            "avg_construction_site_waiting_for_builder_ticks": float(
+                mean(construction_site_waiting_for_builder_ticks)
+            ) if construction_site_waiting_for_builder_ticks else 0.0,
+            "avg_construction_site_waiting_total_ticks": float(
+                mean(construction_site_waiting_total_ticks)
+            ) if construction_site_waiting_total_ticks else 0.0,
+            "avg_construction_site_progress_active_ticks": float(
+                mean(construction_site_progress_active_ticks)
+            ) if construction_site_progress_active_ticks else 0.0,
+            "avg_construction_site_starved_cycles": float(
+                mean(construction_site_starved_cycles)
+            ) if construction_site_starved_cycles else 0.0,
+            "avg_storage_waiting_for_material_ticks": float(
+                mean(storage_waiting_for_material_ticks)
+            ) if storage_waiting_for_material_ticks else 0.0,
+            "avg_house_waiting_for_material_ticks": float(
+                mean(house_waiting_for_material_ticks)
+            ) if house_waiting_for_material_ticks else 0.0,
+            "avg_storage_waiting_for_builder_ticks": float(
+                mean(storage_waiting_for_builder_ticks)
+            ) if storage_waiting_for_builder_ticks else 0.0,
+            "avg_house_waiting_for_builder_ticks": float(
+                mean(house_waiting_for_builder_ticks)
+            ) if house_waiting_for_builder_ticks else 0.0,
+            "avg_construction_site_lifetime_ticks_avg": float(
+                mean(construction_site_lifetime_ticks_avg)
+            ) if construction_site_lifetime_ticks_avg else 0.0,
+            "avg_construction_site_progress_before_abandon_avg": float(
+                mean(construction_site_progress_before_abandon_avg)
+            ) if construction_site_progress_before_abandon_avg else 0.0,
+            "avg_construction_site_material_units_delivered_avg": float(
+                mean(construction_site_material_units_delivered_avg)
+            ) if construction_site_material_units_delivered_avg else 0.0,
+            "avg_construction_site_material_units_missing_avg": float(
+                mean(construction_site_material_units_missing_avg)
+            ) if construction_site_material_units_missing_avg else 0.0,
+            "avg_construction_site_completion_time_avg": float(
+                mean(construction_site_completion_time_avg)
+            ) if construction_site_completion_time_avg else 0.0,
+            "avg_house_completion_time_avg": float(mean(house_completion_time_avg)) if house_completion_time_avg else 0.0,
+            "avg_storage_completion_time_avg": float(mean(storage_completion_time_avg)) if storage_completion_time_avg else 0.0,
         },
     }

@@ -109,6 +109,53 @@ def summarize_family_aggregate(aggregate: Dict[str, Any]) -> Dict[str, float]:
         "avg_houses_completed_count": float(aggregate.get("avg_houses_completed_count", 0.0)),
         "avg_storage_completed_count": float(aggregate.get("avg_storage_completed_count", 0.0)),
         "avg_storage_completion_rate": float(aggregate.get("avg_storage_completion_rate", 0.0)),
+        "avg_construction_delivery_attempts": float(aggregate.get("avg_construction_delivery_attempts", 0.0)),
+        "avg_construction_delivery_successes": float(aggregate.get("avg_construction_delivery_successes", 0.0)),
+        "avg_construction_delivery_failures": float(aggregate.get("avg_construction_delivery_failures", 0.0)),
+        "avg_construction_delivery_to_site_events": float(
+            aggregate.get("avg_construction_delivery_to_site_events", 0.0)
+        ),
+        "avg_construction_delivery_to_wrong_target_or_drift": float(
+            aggregate.get("avg_construction_delivery_to_wrong_target_or_drift", 0.0)
+        ),
+        "avg_construction_delivery_avg_distance_to_site": float(
+            aggregate.get("avg_construction_delivery_avg_distance_to_site", 0.0)
+        ),
+        "avg_construction_delivery_avg_distance_to_source": float(
+            aggregate.get("avg_construction_delivery_avg_distance_to_source", 0.0)
+        ),
+        "avg_storage_delivery_failures": float(aggregate.get("avg_storage_delivery_failures", 0.0)),
+        "avg_house_delivery_failures": float(aggregate.get("avg_house_delivery_failures", 0.0)),
+        "avg_storage_delivery_successes": float(aggregate.get("avg_storage_delivery_successes", 0.0)),
+        "avg_house_delivery_successes": float(aggregate.get("avg_house_delivery_successes", 0.0)),
+        "avg_construction_site_waiting_for_material_ticks": float(
+            aggregate.get("avg_construction_site_waiting_for_material_ticks", 0.0)
+        ),
+        "avg_construction_site_waiting_for_builder_ticks": float(
+            aggregate.get("avg_construction_site_waiting_for_builder_ticks", 0.0)
+        ),
+        "avg_construction_site_waiting_total_ticks": float(aggregate.get("avg_construction_site_waiting_total_ticks", 0.0)),
+        "avg_construction_site_progress_active_ticks": float(
+            aggregate.get("avg_construction_site_progress_active_ticks", 0.0)
+        ),
+        "avg_construction_site_starved_cycles": float(aggregate.get("avg_construction_site_starved_cycles", 0.0)),
+        "avg_storage_waiting_for_material_ticks": float(aggregate.get("avg_storage_waiting_for_material_ticks", 0.0)),
+        "avg_house_waiting_for_material_ticks": float(aggregate.get("avg_house_waiting_for_material_ticks", 0.0)),
+        "avg_storage_waiting_for_builder_ticks": float(aggregate.get("avg_storage_waiting_for_builder_ticks", 0.0)),
+        "avg_house_waiting_for_builder_ticks": float(aggregate.get("avg_house_waiting_for_builder_ticks", 0.0)),
+        "avg_construction_site_lifetime_ticks_avg": float(aggregate.get("avg_construction_site_lifetime_ticks_avg", 0.0)),
+        "avg_construction_site_progress_before_abandon_avg": float(
+            aggregate.get("avg_construction_site_progress_before_abandon_avg", 0.0)
+        ),
+        "avg_construction_site_material_units_delivered_avg": float(
+            aggregate.get("avg_construction_site_material_units_delivered_avg", 0.0)
+        ),
+        "avg_construction_site_material_units_missing_avg": float(
+            aggregate.get("avg_construction_site_material_units_missing_avg", 0.0)
+        ),
+        "avg_construction_site_completion_time_avg": float(aggregate.get("avg_construction_site_completion_time_avg", 0.0)),
+        "avg_house_completion_time_avg": float(aggregate.get("avg_house_completion_time_avg", 0.0)),
+        "avg_storage_completion_time_avg": float(aggregate.get("avg_storage_completion_time_avg", 0.0)),
     }
 
 

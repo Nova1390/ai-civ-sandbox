@@ -273,6 +273,33 @@ def test_aggregate_global_balance_includes_comm002_metrics() -> None:
                         "construction_abandoned_count": 2,
                         "construction_material_delivery_failures": 4,
                         "construction_material_shortage_blocks": 6,
+                        "construction_delivery_attempts": 16,
+                        "construction_delivery_successes": 9,
+                        "construction_delivery_failures": 6,
+                        "construction_delivery_to_site_events": 9,
+                        "construction_delivery_to_wrong_target_or_drift": 3,
+                        "construction_delivery_avg_distance_to_site": 0.8,
+                        "construction_delivery_avg_distance_to_source": 3.2,
+                        "storage_delivery_failures": 4,
+                        "house_delivery_failures": 2,
+                        "storage_delivery_successes": 3,
+                        "house_delivery_successes": 6,
+                        "construction_site_waiting_for_material_ticks": 40,
+                        "construction_site_waiting_for_builder_ticks": 12,
+                        "construction_site_waiting_total_ticks": 90,
+                        "construction_site_progress_active_ticks": 28,
+                        "construction_site_starved_cycles": 14,
+                        "storage_waiting_for_material_ticks": 22,
+                        "house_waiting_for_material_ticks": 18,
+                        "storage_waiting_for_builder_ticks": 8,
+                        "house_waiting_for_builder_ticks": 4,
+                        "construction_site_lifetime_ticks_avg": 55.0,
+                        "construction_site_progress_before_abandon_avg": 1.7,
+                        "construction_site_material_units_delivered_avg": 5.2,
+                        "construction_site_material_units_missing_avg": 2.1,
+                        "construction_site_completion_time_avg": 47.0,
+                        "house_completion_time_avg": 41.0,
+                        "storage_completion_time_avg": 62.0,
                         "houses_completed_count": 5,
                         "storage_attempts": 6,
                         "storage_completed_count": 2,
@@ -467,6 +494,33 @@ def test_aggregate_global_balance_includes_comm002_metrics() -> None:
                         "construction_abandoned_count": 3,
                         "construction_material_delivery_failures": 7,
                         "construction_material_shortage_blocks": 11,
+                        "construction_delivery_attempts": 10,
+                        "construction_delivery_successes": 6,
+                        "construction_delivery_failures": 4,
+                        "construction_delivery_to_site_events": 6,
+                        "construction_delivery_to_wrong_target_or_drift": 2,
+                        "construction_delivery_avg_distance_to_site": 1.0,
+                        "construction_delivery_avg_distance_to_source": 2.8,
+                        "storage_delivery_failures": 3,
+                        "house_delivery_failures": 1,
+                        "storage_delivery_successes": 2,
+                        "house_delivery_successes": 4,
+                        "construction_site_waiting_for_material_ticks": 30,
+                        "construction_site_waiting_for_builder_ticks": 9,
+                        "construction_site_waiting_total_ticks": 70,
+                        "construction_site_progress_active_ticks": 21,
+                        "construction_site_starved_cycles": 10,
+                        "storage_waiting_for_material_ticks": 16,
+                        "house_waiting_for_material_ticks": 14,
+                        "storage_waiting_for_builder_ticks": 6,
+                        "house_waiting_for_builder_ticks": 3,
+                        "construction_site_lifetime_ticks_avg": 49.0,
+                        "construction_site_progress_before_abandon_avg": 1.3,
+                        "construction_site_material_units_delivered_avg": 4.6,
+                        "construction_site_material_units_missing_avg": 1.7,
+                        "construction_site_completion_time_avg": 42.0,
+                        "house_completion_time_avg": 38.0,
+                        "storage_completion_time_avg": 55.0,
                         "houses_completed_count": 3,
                         "storage_attempts": 4,
                         "storage_completed_count": 1,
@@ -633,6 +687,33 @@ def test_aggregate_global_balance_includes_comm002_metrics() -> None:
     assert float(agg["avg_construction_abandoned_count_material"]) == 2.5
     assert float(agg["avg_construction_material_delivery_failures"]) == 5.5
     assert float(agg["avg_construction_material_shortage_blocks"]) == 8.5
+    assert float(agg["avg_construction_delivery_attempts"]) == 13.0
+    assert float(agg["avg_construction_delivery_successes"]) == 7.5
+    assert float(agg["avg_construction_delivery_failures"]) == 5.0
+    assert float(agg["avg_construction_delivery_to_site_events"]) == 7.5
+    assert float(agg["avg_construction_delivery_to_wrong_target_or_drift"]) == 2.5
+    assert float(agg["avg_construction_delivery_avg_distance_to_site"]) == 0.9
+    assert float(agg["avg_construction_delivery_avg_distance_to_source"]) == 3.0
+    assert float(agg["avg_storage_delivery_failures"]) == 3.5
+    assert float(agg["avg_house_delivery_failures"]) == 1.5
+    assert float(agg["avg_storage_delivery_successes"]) == 2.5
+    assert float(agg["avg_house_delivery_successes"]) == 5.0
+    assert float(agg["avg_construction_site_waiting_for_material_ticks"]) == 35.0
+    assert float(agg["avg_construction_site_waiting_for_builder_ticks"]) == 10.5
+    assert float(agg["avg_construction_site_waiting_total_ticks"]) == 80.0
+    assert float(agg["avg_construction_site_progress_active_ticks"]) == 24.5
+    assert float(agg["avg_construction_site_starved_cycles"]) == 12.0
+    assert float(agg["avg_storage_waiting_for_material_ticks"]) == 19.0
+    assert float(agg["avg_house_waiting_for_material_ticks"]) == 16.0
+    assert float(agg["avg_storage_waiting_for_builder_ticks"]) == 7.0
+    assert float(agg["avg_house_waiting_for_builder_ticks"]) == 3.5
+    assert float(agg["avg_construction_site_lifetime_ticks_avg"]) == 52.0
+    assert float(agg["avg_construction_site_progress_before_abandon_avg"]) == 1.5
+    assert float(agg["avg_construction_site_material_units_delivered_avg"]) == 4.9
+    assert float(agg["avg_construction_site_material_units_missing_avg"]) == 1.9
+    assert float(agg["avg_construction_site_completion_time_avg"]) == 44.5
+    assert float(agg["avg_house_completion_time_avg"]) == 39.5
+    assert float(agg["avg_storage_completion_time_avg"]) == 58.5
     assert float(agg["avg_houses_completed_count"]) == 4.0
     assert float(agg["avg_storage_attempts"]) == 5.0
     assert float(agg["avg_storage_completed_count"]) == 1.5

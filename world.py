@@ -686,10 +686,45 @@ def _default_settlement_progression_stats() -> Dict[str, Any]:
         "construction_material_delivery_events": 0,
         "construction_material_delivery_to_active_site": 0,
         "construction_material_delivery_drift_events": 0,
+        "construction_delivery_attempts": 0,
+        "construction_delivery_successes": 0,
+        "construction_delivery_failures": 0,
+        "construction_delivery_to_site_events": 0,
+        "construction_delivery_to_wrong_target_or_drift": 0,
+        "construction_delivery_distance_to_site_sum": 0,
+        "construction_delivery_distance_to_site_samples": 0,
+        "construction_delivery_distance_to_source_sum": 0,
+        "construction_delivery_distance_to_source_samples": 0,
+        "storage_delivery_failures": 0,
+        "house_delivery_failures": 0,
+        "storage_delivery_successes": 0,
+        "house_delivery_successes": 0,
         "construction_progress_ticks": 0,
         "construction_progress_stalled_ticks": 0,
         "construction_completion_events": 0,
         "construction_abandonment_events": 0,
+        "construction_site_waiting_for_material_ticks": 0,
+        "construction_site_waiting_for_builder_ticks": 0,
+        "construction_site_waiting_total_ticks": 0,
+        "construction_site_progress_active_ticks": 0,
+        "construction_site_starved_cycles": 0,
+        "storage_waiting_for_material_ticks": 0,
+        "house_waiting_for_material_ticks": 0,
+        "storage_waiting_for_builder_ticks": 0,
+        "house_waiting_for_builder_ticks": 0,
+        "construction_site_lifetime_ticks_total": 0,
+        "construction_site_lifetime_samples": 0,
+        "construction_site_progress_before_abandon_total": 0,
+        "construction_site_progress_before_abandon_samples": 0,
+        "construction_site_material_units_delivered_total": 0,
+        "construction_site_material_units_missing_total": 0,
+        "construction_site_material_units_missing_samples": 0,
+        "construction_site_completion_time_total": 0,
+        "construction_site_completion_time_samples": 0,
+        "house_completion_time_total": 0,
+        "house_completion_time_samples": 0,
+        "storage_completion_time_total": 0,
+        "storage_completion_time_samples": 0,
         "buffer_saturation_events": 0,
         "surplus_triggered_storage_attempts": 0,
         "surplus_storage_construction_completed": 0,
@@ -6004,10 +6039,34 @@ class World:
             if str(b.get("operational_state", "")) != "under_construction":
                 continue
             active_sites += 1
+            stats["construction_site_waiting_total_ticks"] = int(stats.get("construction_site_waiting_total_ticks", 0)) + 1
             progress = int(b.get("construction_progress", 0))
             required = max(1, int(b.get("construction_required_work", 1)))
             if progress > 0 and progress < required:
                 partial_sites += 1
+                stats["construction_site_progress_active_ticks"] = int(stats.get("construction_site_progress_active_ticks", 0)) + 1
+            needs = {}
+            if hasattr(building_system, "get_outstanding_construction_needs"):
+                try:
+                    needs = building_system.get_outstanding_construction_needs(b)
+                except Exception:
+                    needs = {}
+            outstanding = 0
+            if isinstance(needs, dict):
+                outstanding = int(needs.get("wood", 0)) + int(needs.get("stone", 0)) + int(needs.get("food", 0))
+            btype = str(b.get("type", ""))
+            if outstanding > 0:
+                stats["construction_site_waiting_for_material_ticks"] = int(stats.get("construction_site_waiting_for_material_ticks", 0)) + 1
+                if btype == "storage":
+                    stats["storage_waiting_for_material_ticks"] = int(stats.get("storage_waiting_for_material_ticks", 0)) + 1
+                elif btype == "house":
+                    stats["house_waiting_for_material_ticks"] = int(stats.get("house_waiting_for_material_ticks", 0)) + 1
+            else:
+                stats["construction_site_waiting_for_builder_ticks"] = int(stats.get("construction_site_waiting_for_builder_ticks", 0)) + 1
+                if btype == "storage":
+                    stats["storage_waiting_for_builder_ticks"] = int(stats.get("storage_waiting_for_builder_ticks", 0)) + 1
+                elif btype == "house":
+                    stats["house_waiting_for_builder_ticks"] = int(stats.get("house_waiting_for_builder_ticks", 0)) + 1
         stats["active_construction_sites"] = int(active_sites)
         stats["partially_built_sites_count"] = int(partial_sites)
         local_memory = self.local_practice_memory if isinstance(self.local_practice_memory, dict) else {}
@@ -6043,6 +6102,12 @@ class World:
         storage_attempts = int(stats.get("storage_emergence_attempts", 0))
         storage_completions = int(stats.get("storage_construction_completed_count", 0))
         storage_completion_rate = float(storage_completions) / float(max(1, storage_attempts))
+        site_lifetime_samples = int(stats.get("construction_site_lifetime_samples", 0))
+        site_completion_samples = int(stats.get("construction_site_completion_time_samples", 0))
+        site_abandon_samples = int(stats.get("construction_site_progress_before_abandon_samples", 0))
+        site_missing_samples = int(stats.get("construction_site_material_units_missing_samples", 0))
+        house_completion_samples = int(stats.get("house_completion_time_samples", 0))
+        storage_completion_samples = int(stats.get("storage_completion_time_samples", 0))
         return {
             "farm_sites_created": int(stats.get("farm_sites_created", 0)),
             "farm_work_events": int(stats.get("farm_work_events", 0)),
@@ -6087,10 +6152,66 @@ class World:
             "construction_material_delivery_events": int(stats.get("construction_material_delivery_events", 0)),
             "construction_material_delivery_to_active_site": int(stats.get("construction_material_delivery_to_active_site", 0)),
             "construction_material_delivery_drift_events": int(stats.get("construction_material_delivery_drift_events", 0)),
+            "construction_delivery_attempts": int(stats.get("construction_delivery_attempts", 0)),
+            "construction_delivery_successes": int(stats.get("construction_delivery_successes", 0)),
+            "construction_delivery_failures": int(stats.get("construction_delivery_failures", 0)),
+            "construction_delivery_to_site_events": int(stats.get("construction_delivery_to_site_events", 0)),
+            "construction_delivery_to_wrong_target_or_drift": int(stats.get("construction_delivery_to_wrong_target_or_drift", 0)),
+            "construction_delivery_avg_distance_to_site": round(
+                float(stats.get("construction_delivery_distance_to_site_sum", 0))
+                / float(max(1, int(stats.get("construction_delivery_distance_to_site_samples", 0)))),
+                4,
+            ),
+            "construction_delivery_avg_distance_to_source": round(
+                float(stats.get("construction_delivery_distance_to_source_sum", 0))
+                / float(max(1, int(stats.get("construction_delivery_distance_to_source_samples", 0)))),
+                4,
+            ),
+            "storage_delivery_failures": int(stats.get("storage_delivery_failures", 0)),
+            "house_delivery_failures": int(stats.get("house_delivery_failures", 0)),
+            "storage_delivery_successes": int(stats.get("storage_delivery_successes", 0)),
+            "house_delivery_successes": int(stats.get("house_delivery_successes", 0)),
             "construction_progress_ticks": int(stats.get("construction_progress_ticks", 0)),
             "construction_progress_stalled_ticks": int(stats.get("construction_progress_stalled_ticks", 0)),
             "construction_completion_events": int(stats.get("construction_completion_events", 0)),
             "construction_abandonment_events": int(stats.get("construction_abandonment_events", 0)),
+            "construction_site_waiting_for_material_ticks": int(stats.get("construction_site_waiting_for_material_ticks", 0)),
+            "construction_site_waiting_for_builder_ticks": int(stats.get("construction_site_waiting_for_builder_ticks", 0)),
+            "construction_site_waiting_total_ticks": int(stats.get("construction_site_waiting_total_ticks", 0)),
+            "construction_site_progress_active_ticks": int(stats.get("construction_site_progress_active_ticks", 0)),
+            "construction_site_starved_cycles": int(stats.get("construction_site_starved_cycles", 0)),
+            "storage_waiting_for_material_ticks": int(stats.get("storage_waiting_for_material_ticks", 0)),
+            "house_waiting_for_material_ticks": int(stats.get("house_waiting_for_material_ticks", 0)),
+            "storage_waiting_for_builder_ticks": int(stats.get("storage_waiting_for_builder_ticks", 0)),
+            "house_waiting_for_builder_ticks": int(stats.get("house_waiting_for_builder_ticks", 0)),
+            "construction_site_lifetime_ticks_avg": round(
+                float(stats.get("construction_site_lifetime_ticks_total", 0)) / float(max(1, site_lifetime_samples)),
+                4,
+            ),
+            "construction_site_progress_before_abandon_avg": round(
+                float(stats.get("construction_site_progress_before_abandon_total", 0)) / float(max(1, site_abandon_samples)),
+                4,
+            ),
+            "construction_site_material_units_delivered_avg": round(
+                float(stats.get("construction_site_material_units_delivered_total", 0)) / float(max(1, site_lifetime_samples)),
+                4,
+            ),
+            "construction_site_material_units_missing_avg": round(
+                float(stats.get("construction_site_material_units_missing_total", 0)) / float(max(1, site_missing_samples)),
+                4,
+            ),
+            "construction_site_completion_time_avg": round(
+                float(stats.get("construction_site_completion_time_total", 0)) / float(max(1, site_completion_samples)),
+                4,
+            ),
+            "house_completion_time_avg": round(
+                float(stats.get("house_completion_time_total", 0)) / float(max(1, house_completion_samples)),
+                4,
+            ),
+            "storage_completion_time_avg": round(
+                float(stats.get("storage_completion_time_total", 0)) / float(max(1, storage_completion_samples)),
+                4,
+            ),
             "houses_completed_count": int(stats.get("houses_completed_count", 0)),
             "storage_attempts": int(storage_attempts),
             "storage_completed_count": int(storage_completions),
@@ -6211,9 +6332,52 @@ class World:
             "construction_material_delivery_events": int(progression.get("construction_material_delivery_events", 0)),
             "construction_material_delivery_to_active_site": int(progression.get("construction_material_delivery_to_active_site", 0)),
             "construction_material_delivery_drift_events": int(progression.get("construction_material_delivery_drift_events", 0)),
+            "construction_delivery_attempts": int(progression.get("construction_delivery_attempts", 0)),
+            "construction_delivery_successes": int(progression.get("construction_delivery_successes", 0)),
+            "construction_delivery_failures": int(progression.get("construction_delivery_failures", 0)),
+            "construction_delivery_to_site_events": int(progression.get("construction_delivery_to_site_events", 0)),
+            "construction_delivery_to_wrong_target_or_drift": int(
+                progression.get("construction_delivery_to_wrong_target_or_drift", 0)
+            ),
+            "construction_delivery_avg_distance_to_site": float(
+                progression.get("construction_delivery_avg_distance_to_site", 0.0)
+            ),
+            "construction_delivery_avg_distance_to_source": float(
+                progression.get("construction_delivery_avg_distance_to_source", 0.0)
+            ),
+            "storage_delivery_failures": int(progression.get("storage_delivery_failures", 0)),
+            "house_delivery_failures": int(progression.get("house_delivery_failures", 0)),
+            "storage_delivery_successes": int(progression.get("storage_delivery_successes", 0)),
+            "house_delivery_successes": int(progression.get("house_delivery_successes", 0)),
             "construction_material_delivery_failures": int(construction_delivery_failures),
             "construction_material_shortage_blocks": int(shortage_blocks),
             "construction_material_source_failures": int(material_delivery_failures),
+            "construction_site_waiting_for_material_ticks": int(
+                progression.get("construction_site_waiting_for_material_ticks", 0)
+            ),
+            "construction_site_waiting_for_builder_ticks": int(
+                progression.get("construction_site_waiting_for_builder_ticks", 0)
+            ),
+            "construction_site_waiting_total_ticks": int(progression.get("construction_site_waiting_total_ticks", 0)),
+            "construction_site_progress_active_ticks": int(progression.get("construction_site_progress_active_ticks", 0)),
+            "construction_site_starved_cycles": int(progression.get("construction_site_starved_cycles", 0)),
+            "storage_waiting_for_material_ticks": int(progression.get("storage_waiting_for_material_ticks", 0)),
+            "house_waiting_for_material_ticks": int(progression.get("house_waiting_for_material_ticks", 0)),
+            "storage_waiting_for_builder_ticks": int(progression.get("storage_waiting_for_builder_ticks", 0)),
+            "house_waiting_for_builder_ticks": int(progression.get("house_waiting_for_builder_ticks", 0)),
+            "construction_site_lifetime_ticks_avg": float(progression.get("construction_site_lifetime_ticks_avg", 0.0)),
+            "construction_site_progress_before_abandon_avg": float(
+                progression.get("construction_site_progress_before_abandon_avg", 0.0)
+            ),
+            "construction_site_material_units_delivered_avg": float(
+                progression.get("construction_site_material_units_delivered_avg", 0.0)
+            ),
+            "construction_site_material_units_missing_avg": float(
+                progression.get("construction_site_material_units_missing_avg", 0.0)
+            ),
+            "construction_site_completion_time_avg": float(progression.get("construction_site_completion_time_avg", 0.0)),
+            "house_completion_time_avg": float(progression.get("house_completion_time_avg", 0.0)),
+            "storage_completion_time_avg": float(progression.get("storage_completion_time_avg", 0.0)),
             "houses_completed_count": int(houses_completed),
             "storage_attempts": int(progression.get("storage_attempts", 0)),
             "storage_completed_count": int(storage_completed),
