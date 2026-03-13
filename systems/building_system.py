@@ -2169,6 +2169,7 @@ def fulfill_reserved_delivery(
         return 0
     req[reserved_key] = reserved - qty
     buf[r] = int(buf.get(r, 0)) + qty
+    _sync_construction_site_state(building)
     return qty
 
 
@@ -2181,6 +2182,7 @@ def _use_construction_buffer(building: Dict[str, Any], costs: Dict[str, int]) ->
             return False
     for resource in ("wood", "stone", "food"):
         buf[resource] = int(buf.get(resource, 0)) - int(costs.get(resource, 0))
+    _sync_construction_site_state(building)
     return True
 
 
@@ -2192,6 +2194,70 @@ def _site_ready_for_completion(building: Dict[str, Any], costs: Dict[str, int]) 
         if int(buf.get(resource, 0)) < int(costs.get(resource, 0)):
             return False
     return True
+
+
+def _sync_construction_site_state(building: Dict[str, Any], *, now_tick: Optional[int] = None) -> None:
+    if not isinstance(building, dict):
+        return
+
+    req = building.get("construction_request")
+    if not isinstance(req, dict):
+        req = _construction_request_from_costs(_construction_costs(str(building.get("type", ""))))
+        building["construction_request"] = req
+    buf = building.get("construction_buffer")
+    if not isinstance(buf, dict):
+        buf = _empty_construction_buffer()
+        building["construction_buffer"] = buf
+
+    required_materials = {
+        "wood": max(0, int(req.get("wood_needed", 0))),
+        "stone": max(0, int(req.get("stone_needed", 0))),
+        "food": max(0, int(req.get("food_needed", 0))),
+    }
+    delivered_materials = {
+        "wood": max(0, int(buf.get("wood", 0))),
+        "stone": max(0, int(buf.get("stone", 0))),
+        "food": max(0, int(buf.get("food", 0))),
+    }
+    remaining_materials = {
+        "wood": max(0, required_materials["wood"] - delivered_materials["wood"]),
+        "stone": max(0, required_materials["stone"] - delivered_materials["stone"]),
+        "food": max(0, required_materials["food"] - delivered_materials["food"]),
+    }
+    building["required_materials"] = required_materials
+    building["delivered_materials"] = delivered_materials
+    building["remaining_materials"] = remaining_materials
+
+    required_work = max(1, int(building.get("construction_required_work", 1)))
+    completed_work = min(required_work, max(0, int(building.get("construction_progress", 0))))
+    remaining_work = max(0, required_work - completed_work)
+    building["construction_required_work"] = required_work
+    building["construction_progress"] = completed_work
+    building["required_work_ticks"] = required_work
+    building["completed_work_ticks"] = completed_work
+    building["remaining_work_ticks"] = remaining_work
+
+    if str(building.get("operational_state", "")) == "active":
+        building["build_state"] = "completed"
+        return
+
+    materials_ready = all(remaining_materials[r] <= 0 for r in ("wood", "stone", "food"))
+    has_any_material = any(delivered_materials[r] > 0 for r in ("wood", "stone", "food"))
+    has_work = completed_work > 0
+    build_state = "planned"
+    if materials_ready and has_work:
+        build_state = "in_progress"
+    elif materials_ready:
+        build_state = "buildable"
+    elif has_work:
+        build_state = "paused"
+    elif has_any_material:
+        build_state = "supplying"
+    elif int(now_tick if now_tick is not None else -1) >= 0:
+        last_progress = int(building.get("construction_last_progress_tick", -10_000))
+        if int(now_tick if now_tick is not None else 0) - last_progress <= int(CONSTRUCTION_WAIT_SIGNAL_TICKS):
+            build_state = "paused"
+    building["build_state"] = build_state
 
 
 def _mark_builder_waiting_on_site(world: "World", building: Dict[str, Any], agent: "Agent") -> None:
@@ -2211,6 +2277,7 @@ def _mark_builder_waiting_on_site(world: "World", building: Dict[str, Any], agen
         elif btype == "house":
             world.record_settlement_progression_metric("house_waiting_for_material_ticks")
     building["construction_starved_cycles"] = int(building.get("construction_starved_cycles", 0)) + 1
+    _sync_construction_site_state(building, now_tick=int(getattr(world, "tick", 0)))
 
 
 def _mark_construction_site_demand_tick(world: "World", building: Dict[str, Any]) -> None:
@@ -2262,6 +2329,7 @@ def _advance_construction_progress(building: Dict[str, Any], work_amount: int = 
     new_progress = min(required, progress + gained)
     building["construction_progress"] = new_progress
     building["construction_required_work"] = required
+    _sync_construction_site_state(building)
     return new_progress
 
 
@@ -2288,6 +2356,8 @@ def _attach_carried_materials_to_site(agent: "Agent", building: Dict[str, Any], 
         agent.inventory[resource] = have - qty
         buf[resource] = int(buf.get(resource, 0)) + qty
         moved += qty
+    if moved > 0:
+        _sync_construction_site_state(building)
     return moved
 
 
@@ -2536,10 +2606,18 @@ def _create_construction_site(
         now_tick = int(getattr(world, "tick", 0))
         site["construction_created_tick"] = now_tick
         site["construction_last_progress_tick"] = now_tick
+        site["construction_last_delivery_tick"] = -1
+        site["construction_first_delivery_tick"] = -1
+        site["construction_first_progress_tick"] = -1
         site["construction_progress_active_ticks"] = 0
         site["construction_starved_cycles"] = 0
         site["construction_delivered_units"] = 0
+        site["required_work_ticks"] = int(site.get("construction_required_work", 1))
+        site["completed_work_ticks"] = 0
+        site["remaining_work_ticks"] = int(site.get("construction_required_work", 1))
+        site["build_state"] = "planned"
         _mark_construction_site_demand_tick(world, site)
+        _sync_construction_site_state(site, now_tick=now_tick)
         if hasattr(world, "record_settlement_progression_metric"):
             world.record_settlement_progression_metric("construction_sites_created")
             if str(building_type) == "house":
@@ -2587,6 +2665,22 @@ def _record_site_lifecycle_metrics(world: "World", building: Dict[str, Any], *, 
     if str(outcome) == "completed":
         world.record_settlement_progression_metric("construction_site_completion_time_total", lifetime)
         world.record_settlement_progression_metric("construction_site_completion_time_samples", 1)
+        first_delivery_tick = int(building.get("construction_first_delivery_tick", -1))
+        first_progress_tick = int(building.get("construction_first_progress_tick", -1))
+        if first_delivery_tick >= 0:
+            world.record_settlement_progression_metric(
+                "construction_time_first_delivery_to_completion_total",
+                max(0, now_tick - first_delivery_tick),
+            )
+            world.record_settlement_progression_metric("construction_time_first_delivery_to_completion_samples", 1)
+            world.record_settlement_progression_metric("construction_completed_after_first_delivery_count", 1)
+        if first_progress_tick >= 0:
+            world.record_settlement_progression_metric(
+                "construction_time_first_progress_to_completion_total",
+                max(0, now_tick - first_progress_tick),
+            )
+            world.record_settlement_progression_metric("construction_time_first_progress_to_completion_samples", 1)
+            world.record_settlement_progression_metric("construction_completed_after_started_progress_count", 1)
         if btype == "house":
             world.record_settlement_progression_metric("house_completion_time_total", lifetime)
             world.record_settlement_progression_metric("house_completion_time_samples", 1)
@@ -2619,6 +2713,10 @@ def _complete_construction_site(world: "World", building: Dict[str, Any]) -> Non
     required = max(1, int(building.get("construction_required_work", 1)))
     building["construction_progress"] = required
     building["construction_required_work"] = required
+    building["required_work_ticks"] = required
+    building["completed_work_ticks"] = required
+    building["remaining_work_ticks"] = 0
+    building["build_state"] = "completed"
     pos = (int(building.get("x", 0)), int(building.get("y", 0)))
     if building.get("type") == "house":
         world.structures.add(pos)
@@ -2779,7 +2877,8 @@ def clear_stale_construction_sites(world: "World", *, stale_ticks: int = CONSTRU
             continue
         reserved_total = int(req.get("wood_reserved", 0)) + int(req.get("stone_reserved", 0)) + int(req.get("food_reserved", 0))
         buffered_total = int(buf.get("wood", 0)) + int(buf.get("stone", 0)) + int(buf.get("food", 0))
-        if progress > 0 or reserved_total > 0 or buffered_total > 0:
+        delivered_total = int(building.get("construction_delivered_units", 0))
+        if progress > 0 or reserved_total > 0 or buffered_total > 0 or delivered_total > 0:
             continue
 
         _record_abandonment_metrics(building)
@@ -2788,7 +2887,19 @@ def clear_stale_construction_sites(world: "World", *, stale_ticks: int = CONSTRU
     return int(removed)
 
 
-def _clear_hauler_delivery(agent: "Agent") -> None:
+def _clear_hauler_delivery(agent: "Agent", world: Optional["World"] = None) -> None:
+    if world is not None:
+        target_id = str(getattr(agent, "delivery_target_building_id", "") or "")
+        resource_type = str(getattr(agent, "delivery_resource_type", "") or "")
+        reserved_amount = int(getattr(agent, "delivery_reserved_amount", 0) or 0)
+        if target_id and resource_type in {"wood", "stone", "food"} and reserved_amount > 0:
+            building = getattr(world, "buildings", {}).get(target_id)
+            if isinstance(building, dict):
+                req = building.get("construction_request")
+                if isinstance(req, dict):
+                    key = f"{resource_type}_reserved"
+                    current = max(0, int(req.get(key, 0)))
+                    req[key] = max(0, current - reserved_amount)
     if hasattr(agent, "delivery_target_building_id"):
         agent.delivery_target_building_id = None
     if hasattr(agent, "delivery_resource_type"):
@@ -2855,7 +2966,7 @@ def run_hauler_construction_delivery(world: "World", agent: "Agent") -> bool:
     village = world.get_village_by_id(getattr(agent, "village_id", None))
     village_uid = str(village.get("village_uid", "")) if isinstance(village, dict) else ""
     if village is None:
-        _clear_hauler_delivery(agent)
+        _clear_hauler_delivery(agent, world)
         _delivery_fail("no_delivery_target")
         _record_housing_failure(world, "no_delivery_target", village_uid=village_uid or None)
         if str(getattr(agent, "role", "")) == "hauler" and hasattr(world, "record_task_completion_preconditions_failed"):
@@ -2870,8 +2981,11 @@ def run_hauler_construction_delivery(world: "World", agent: "Agent") -> bool:
 
     if not target_id or resource_type not in ("wood", "stone", "food") or reserved_amount <= 0:
         sites = _construction_sites_for_village(world, village)
-        candidates: List[Tuple[int, int, int, int, int, str, str, int]] = []
+        candidates: List[Tuple[int, int, int, int, int, int, int, int, int, str, str, int]] = []
         storage_totals = get_village_storage_totals(world, village)
+        focus_site_id = str(getattr(agent, "construction_focus_site_id", "") or "")
+        focus_tick = int(getattr(agent, "construction_focus_tick", -10_000))
+        focus_recent = int(getattr(world, "tick", 0)) - focus_tick <= 160
         carrying_by_resource = {
             "wood": int(getattr(agent, "inventory", {}).get("wood", 0)),
             "stone": int(getattr(agent, "inventory", {}).get("stone", 0)),
@@ -2909,9 +3023,27 @@ def run_hauler_construction_delivery(world: "World", agent: "Agent") -> bool:
                         local_delivery_bonus += int(world.storage_delivery_priority_bonus(agent, site))
                     except Exception:
                         pass
+                if focus_recent and focus_site_id and str(site.get("building_id", "")) == focus_site_id:
+                    local_delivery_bonus += 6
+                buffered_total = int((site.get("construction_buffer", {}) or {}).get("wood", 0)) + int(
+                    (site.get("construction_buffer", {}) or {}).get("stone", 0)
+                ) + int((site.get("construction_buffer", {}) or {}).get("food", 0))
+                started_rank = 0 if (
+                    int(site.get("construction_progress", 0)) > 0
+                    or int(site.get("construction_delivered_units", 0)) > 0
+                    or buffered_total > 0
+                ) else 1
+                storage_started_rank = 0 if (str(site.get("type", "")) == "storage" and started_rank == 0) else 1
+                near_complete_rank = 0 if int(need) <= 2 else 1
+                last_delivery_tick = int(site.get("construction_last_delivery_tick", -1))
+                recent_delivery_rank = 0 if (last_delivery_tick >= 0 and int(getattr(world, "tick", 0)) - last_delivery_tick <= 40) else 1
                 candidates.append(
                     (
                         builder_wait_priority,
+                        started_rank,
+                        storage_started_rank,
+                        near_complete_rank,
+                        recent_delivery_rank,
                         -int(local_delivery_bonus),
                         carrying_priority,
                         source_dist,
@@ -2929,7 +3061,7 @@ def run_hauler_construction_delivery(world: "World", agent: "Agent") -> bool:
             )
             if carrying_any > 0 and hasattr(world, "record_settlement_progression_metric"):
                 world.record_settlement_progression_metric("construction_material_delivery_drift_events")
-            _clear_hauler_delivery(agent)
+            _clear_hauler_delivery(agent, world)
             fail_reason = "no_delivery_target" if not sites else "no_resource_available"
             _delivery_fail(fail_reason, village_uid=village_uid)
             _record_housing_failure(world, fail_reason, village_uid=village_uid or None)
@@ -2941,8 +3073,8 @@ def run_hauler_construction_delivery(world: "World", agent: "Agent") -> bool:
                 else:
                     world.record_workforce_block_reason(agent, "hauler", "no_materials_available")
             return False
-        candidates.sort(key=lambda x: (x[0], x[1], x[2], x[3], x[4], x[5], x[6]))
-        _, local_bonus_key, _, _, _, bid, resource_type, need = candidates[0]
+        candidates.sort(key=lambda x: (x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7], x[8], x[9], x[10]))
+        _, _, _, _, _, local_bonus_key, _, _, _, bid, resource_type, need = candidates[0]
         if int(local_bonus_key) < 0 and hasattr(world, "secondary_nucleus_delivery_priority"):
             try:
                 selected_site = getattr(world, "buildings", {}).get(str(bid))
@@ -2971,7 +3103,7 @@ def run_hauler_construction_delivery(world: "World", agent: "Agent") -> bool:
         reserve_cap = min(int(need), int(getattr(agent, "max_inventory", 0)))
         reserved = reserve_materials_for_construction(world, bid, resource_type, reserve_cap)
         if reserved <= 0:
-            _clear_hauler_delivery(agent)
+            _clear_hauler_delivery(agent, world)
             _delivery_fail("reservation_lost", village_uid=village_uid)
             if is_house_target:
                 _record_housing_failure(world, "hauler_reassigned", village_uid=village_uid or None)
@@ -3001,7 +3133,7 @@ def run_hauler_construction_delivery(world: "World", agent: "Agent") -> bool:
     site = getattr(world, "buildings", {}).get(str(target_id))
     site_is_house = isinstance(site, dict) and str(site.get("type", "")) == "house"
     if not isinstance(site, dict) or site.get("operational_state") != "under_construction":
-        _clear_hauler_delivery(agent)
+        _clear_hauler_delivery(agent, world)
         fail_reason = "site_invalidated"
         if isinstance(site, dict) and str(site.get("operational_state", "")) == "active":
             fail_reason = "construction_completed_before_delivery"
@@ -3017,7 +3149,7 @@ def run_hauler_construction_delivery(world: "World", agent: "Agent") -> bool:
     resource_type = str(getattr(agent, "delivery_resource_type", ""))
     reserved_amount = int(getattr(agent, "delivery_reserved_amount", 0))
     if reserved_amount <= 0:
-        _clear_hauler_delivery(agent)
+        _clear_hauler_delivery(agent, world)
         _delivery_fail("reservation_lost", village_uid=village_uid)
         if site_is_house:
             _record_housing_failure(world, "hauler_reassigned", village_uid=village_uid or None)
@@ -3110,7 +3242,7 @@ def run_hauler_construction_delivery(world: "World", agent: "Agent") -> bool:
         )
     fulfilled = fulfill_reserved_delivery(world, str(target_id), resource_type, deliver_amount)
     if fulfilled <= 0:
-        _clear_hauler_delivery(agent)
+        _clear_hauler_delivery(agent, world)
         _delivery_fail("reservation_lost", village_uid=village_uid)
         if site_is_house:
             _record_housing_failure(world, "hauler_reassigned", village_uid=village_uid or None)
@@ -3122,7 +3254,7 @@ def run_hauler_construction_delivery(world: "World", agent: "Agent") -> bool:
     agent.inventory[resource_type] = carrying - fulfilled
     agent.delivery_reserved_amount = max(0, reserved_amount - fulfilled)
     if int(agent.delivery_reserved_amount) <= 0:
-        _clear_hauler_delivery(agent)
+        _clear_hauler_delivery(agent, world)
     if str(getattr(agent, "role", "")) == "hauler" and hasattr(world, "record_task_completion_preconditions_met"):
         world.record_task_completion_preconditions_met(agent, "construction_delivery")
         world.record_task_completion_productive(agent, "construction_delivery")
@@ -3162,26 +3294,15 @@ def run_hauler_construction_delivery(world: "World", agent: "Agent") -> bool:
         if int(site.get("construction_progress", 0)) > 0 or _site_has_recent_builder_wait_signal(world, site):
             world.record_settlement_progression_metric("construction_material_delivery_to_active_site", int(fulfilled))
         site["construction_delivered_units"] = int(site.get("construction_delivered_units", 0)) + int(fulfilled)
+    agent.construction_focus_site_id = str(target_id)
+    agent.construction_focus_tick = int(getattr(world, "tick", 0))
+    site["construction_last_delivery_tick"] = int(getattr(world, "tick", 0))
+    if int(site.get("construction_first_delivery_tick", -1)) < 0:
+        site["construction_first_delivery_tick"] = int(getattr(world, "tick", 0))
     if str(site.get("type", "")) == "storage" and hasattr(world, "record_settlement_progression_metric"):
         world.record_settlement_progression_metric("storage_material_delivery_events", int(fulfilled))
 
-    # Delivery handoff can activate construction progress when a builder is actually involved.
-    # Completion still requires full material readiness; this only prevents a dead pipeline where
-    # deliveries happen but progress never starts.
-    site_type = str(site.get("type", ""))
-    if site_type in {"house", "storage"} and can_agent_work_on_construction(agent, site):
-        costs = _construction_costs(site_type)
-        if not _site_work_complete(site):
-            _advance_construction_progress(site)
-            site["construction_last_progress_tick"] = int(getattr(world, "tick", 0))
-            site["construction_progress_active_ticks"] = int(site.get("construction_progress_active_ticks", 0)) + 1
-            if hasattr(world, "record_settlement_progression_metric"):
-                world.record_settlement_progression_metric("construction_progress_ticks")
-                if site_type == "storage":
-                    world.record_settlement_progression_metric("storage_construction_progress_ticks")
-        if _site_work_complete(site) and _site_ready_for_completion(site, costs):
-            if _use_construction_buffer(site, costs):
-                _complete_construction_site(world, site)
+    _sync_construction_site_state(site, now_tick=int(getattr(world, "tick", 0)))
     return True
 
 
@@ -3632,6 +3753,10 @@ def try_build_house(world: "World", agent: "Agent") -> bool:
         if str(getattr(agent, "role", "")) == "builder" and hasattr(world, "record_workforce_block_reason"):
             world.record_workforce_block_reason(agent, "builder", "no_construction_site")
         return False
+    try:
+        agent.assigned_building_id = str(site.get("building_id", ""))
+    except Exception:
+        pass
     if site_was_new:
         _record_housing_siting_stage(world, "house_site_created", village_uid=village_uid)
     _record_housing_stage(
@@ -3661,19 +3786,18 @@ def try_build_house(world: "World", agent: "Agent") -> bool:
     _record_housing_worker(world, "builder_arrived_at_house", village_uid=village_uid)
     _mark_construction_site_demand_tick(world, site)
     _attach_carried_materials_to_site(agent, site, costs)
-    if not _site_ready_for_completion(site, costs):
+    buffer = site.get("construction_buffer", {}) if isinstance(site.get("construction_buffer", {}), dict) else {}
+    buffered_total = int(buffer.get("wood", 0)) + int(buffer.get("stone", 0)) + int(buffer.get("food", 0))
+    waiting_due_to_material = False
+    if buffered_total <= 0:
         if _try_builder_local_self_supply(world, agent, site, costs, village=village):
             return False
         _mark_builder_waiting_on_site(world, site, agent)
+        waiting_due_to_material = True
         if int(getattr(agent, "hunger", 100)) < 20:
             _record_housing_failure(world, "builder_starving", village_uid=village_uid)
         else:
             _record_housing_failure(world, "materials_missing", village_uid=village_uid)
-        if str(getattr(agent, "role", "")) == "builder" and hasattr(world, "record_task_completion_preconditions_failed"):
-            world.record_task_completion_preconditions_failed(agent, "build_house", "waiting_on_delivery")
-        if str(getattr(agent, "role", "")) == "builder" and hasattr(world, "record_workforce_block_reason"):
-            world.record_workforce_block_reason(agent, "builder", "waiting_on_delivery")
-        return False
     if str(getattr(agent, "role", "")) == "builder" and hasattr(world, "record_task_completion_preconditions_met"):
         world.record_task_completion_preconditions_met(agent, "build_house")
         world.record_task_completion_preconditions_met(agent, "construction_progress")
@@ -3681,6 +3805,8 @@ def try_build_house(world: "World", agent: "Agent") -> bool:
         world.record_situated_construction_event("construction_on_site_work_ticks")
     _advance_construction_progress(site)
     site["construction_last_progress_tick"] = int(getattr(world, "tick", 0))
+    if int(site.get("construction_first_progress_tick", -1)) < 0:
+        site["construction_first_progress_tick"] = int(getattr(world, "tick", 0))
     site["construction_progress_active_ticks"] = int(site.get("construction_progress_active_ticks", 0)) + 1
     if hasattr(world, "record_settlement_progression_metric"):
         world.record_settlement_progression_metric("construction_progress_ticks")
@@ -3707,6 +3833,20 @@ def try_build_house(world: "World", agent: "Agent") -> bool:
             },
         )
     if not _site_work_complete(site):
+        if waiting_due_to_material:
+            if str(getattr(agent, "role", "")) == "builder" and hasattr(world, "record_task_completion_preconditions_failed"):
+                world.record_task_completion_preconditions_failed(agent, "build_house", "waiting_on_delivery")
+            if str(getattr(agent, "role", "")) == "builder" and hasattr(world, "record_workforce_block_reason"):
+                world.record_workforce_block_reason(agent, "builder", "waiting_on_delivery")
+        _sync_construction_site_state(site, now_tick=int(getattr(world, "tick", 0)))
+        return False
+    if not _site_ready_for_completion(site, costs):
+        _mark_builder_waiting_on_site(world, site, agent)
+        if str(getattr(agent, "role", "")) == "builder" and hasattr(world, "record_task_completion_preconditions_failed"):
+            world.record_task_completion_preconditions_failed(agent, "build_house", "waiting_on_delivery")
+        if str(getattr(agent, "role", "")) == "builder" and hasattr(world, "record_workforce_block_reason"):
+            world.record_workforce_block_reason(agent, "builder", "waiting_on_delivery")
+        _sync_construction_site_state(site, now_tick=int(getattr(world, "tick", 0)))
         return False
     _record_housing_path(world, "house_completed_via_construction_progress", village_uid=village_uid)
     if not _use_construction_buffer(site, costs):
@@ -3831,6 +3971,10 @@ def try_build_storage(world: "World", agent: "Agent") -> bool:
         if str(getattr(agent, "role", "")) == "builder" and hasattr(world, "record_workforce_block_reason"):
             world.record_workforce_block_reason(agent, "builder", "no_construction_site")
         return False
+    try:
+        agent.assigned_building_id = str(site.get("building_id", ""))
+    except Exception:
+        pass
     if not _agent_is_situated_on_site(agent, site):
         if hasattr(world, "record_settlement_progression_metric"):
             world.record_settlement_progression_metric("storage_construction_interrupted_invalid")
@@ -3844,15 +3988,18 @@ def try_build_storage(world: "World", agent: "Agent") -> bool:
         return False
     _mark_construction_site_demand_tick(world, site)
     _attach_carried_materials_to_site(agent, site, costs)
-    if not _site_ready_for_completion(site, costs):
+    buffer = site.get("construction_buffer", {}) if isinstance(site.get("construction_buffer", {}), dict) else {}
+    buffered_total = int(buffer.get("wood", 0)) + int(buffer.get("stone", 0)) + int(buffer.get("food", 0))
+    waiting_due_to_material = False
+    if buffered_total <= 0:
         if _try_builder_local_self_supply(world, agent, site, costs, village=village):
             return False
         _mark_builder_waiting_on_site(world, site, agent)
+        waiting_due_to_material = True
         if str(getattr(agent, "role", "")) == "builder" and hasattr(world, "record_task_completion_preconditions_failed"):
             world.record_task_completion_preconditions_failed(agent, "build_storage", "waiting_on_delivery")
         if str(getattr(agent, "role", "")) == "builder" and hasattr(world, "record_workforce_block_reason"):
             world.record_workforce_block_reason(agent, "builder", "waiting_on_delivery")
-        return False
     if str(getattr(agent, "role", "")) == "builder" and hasattr(world, "record_task_completion_preconditions_met"):
         world.record_task_completion_preconditions_met(agent, "build_storage")
         world.record_task_completion_preconditions_met(agent, "construction_progress")
@@ -3860,6 +4007,8 @@ def try_build_storage(world: "World", agent: "Agent") -> bool:
         world.record_situated_construction_event("construction_on_site_work_ticks")
     _advance_construction_progress(site)
     site["construction_last_progress_tick"] = int(getattr(world, "tick", 0))
+    if int(site.get("construction_first_progress_tick", -1)) < 0:
+        site["construction_first_progress_tick"] = int(getattr(world, "tick", 0))
     site["construction_progress_active_ticks"] = int(site.get("construction_progress_active_ticks", 0)) + 1
     if hasattr(world, "record_settlement_progression_metric"):
         world.record_settlement_progression_metric("construction_progress_ticks")
@@ -3881,6 +4030,20 @@ def try_build_storage(world: "World", agent: "Agent") -> bool:
             },
         )
     if not _site_work_complete(site):
+        if waiting_due_to_material:
+            if str(getattr(agent, "role", "")) == "builder" and hasattr(world, "record_task_completion_preconditions_failed"):
+                world.record_task_completion_preconditions_failed(agent, "build_storage", "waiting_on_delivery")
+            if str(getattr(agent, "role", "")) == "builder" and hasattr(world, "record_workforce_block_reason"):
+                world.record_workforce_block_reason(agent, "builder", "waiting_on_delivery")
+        _sync_construction_site_state(site, now_tick=int(getattr(world, "tick", 0)))
+        return False
+    if not _site_ready_for_completion(site, costs):
+        _mark_builder_waiting_on_site(world, site, agent)
+        if str(getattr(agent, "role", "")) == "builder" and hasattr(world, "record_task_completion_preconditions_failed"):
+            world.record_task_completion_preconditions_failed(agent, "build_storage", "waiting_on_delivery")
+        if str(getattr(agent, "role", "")) == "builder" and hasattr(world, "record_workforce_block_reason"):
+            world.record_workforce_block_reason(agent, "builder", "waiting_on_delivery")
+        _sync_construction_site_state(site, now_tick=int(getattr(world, "tick", 0)))
         return False
     if not _use_construction_buffer(site, costs):
         if str(getattr(agent, "role", "")) == "builder" and hasattr(world, "record_task_completion_preconditions_failed"):

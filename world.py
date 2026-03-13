@@ -719,8 +719,27 @@ def _default_settlement_progression_stats() -> Dict[str, Any]:
         "construction_site_material_units_delivered_total": 0,
         "construction_site_material_units_missing_total": 0,
         "construction_site_material_units_missing_samples": 0,
+        "construction_site_material_units_required_total": 0,
+        "construction_site_material_units_delivered_total_live": 0,
+        "construction_site_material_units_remaining": 0,
+        "construction_site_required_work_ticks_total": 0,
+        "construction_site_completed_work_ticks_total_live": 0,
+        "construction_site_remaining_work_ticks": 0,
+        "construction_build_state_planned_count": 0,
+        "construction_build_state_supplying_count": 0,
+        "construction_build_state_buildable_count": 0,
+        "construction_build_state_in_progress_count": 0,
+        "construction_build_state_paused_count": 0,
+        "construction_build_state_completed_count": 0,
+        "construction_near_complete_sites_count": 0,
         "construction_site_completion_time_total": 0,
         "construction_site_completion_time_samples": 0,
+        "construction_time_first_delivery_to_completion_total": 0,
+        "construction_time_first_delivery_to_completion_samples": 0,
+        "construction_time_first_progress_to_completion_total": 0,
+        "construction_time_first_progress_to_completion_samples": 0,
+        "construction_completed_after_first_delivery_count": 0,
+        "construction_completed_after_started_progress_count": 0,
         "house_completion_time_total": 0,
         "house_completion_time_samples": 0,
         "storage_completion_time_total": 0,
@@ -5957,52 +5976,19 @@ class World:
         elif str(site.get("type", "")) == "house":
             self.record_settlement_progression_metric("house_delivery_successes")
         site["construction_delivered_units"] = int(site.get("construction_delivered_units", 0)) + int(moved)
+        site["construction_last_delivery_tick"] = int(getattr(self, "tick", 0))
+        if int(site.get("construction_first_delivery_tick", -1)) < 0:
+            site["construction_first_delivery_tick"] = int(getattr(self, "tick", 0))
+        agent.construction_focus_site_id = str(site.get("building_id", ""))
+        agent.construction_focus_tick = int(getattr(self, "tick", 0))
         if str(site.get("type", "")) == "storage":
             self.record_settlement_progression_metric("storage_material_delivery_events", int(moved))
 
-        # Immediate on-site handoff activation: once materials are delivered on-site,
-        # allow construction work to advance and complete when requirements are met.
-        site_type = str(site.get("type", ""))
-        if site_type in {"house", "storage"} and hasattr(building_system, "can_agent_work_on_construction"):
+        if hasattr(building_system, "_sync_construction_site_state"):
             try:
-                can_work = bool(building_system.can_agent_work_on_construction(agent, site))
+                building_system._sync_construction_site_state(site, now_tick=int(getattr(self, "tick", 0)))  # type: ignore[attr-defined]
             except Exception:
-                can_work = False
-            if can_work:
-                try:
-                    costs = building_system._construction_costs(site_type)  # type: ignore[attr-defined]
-                except Exception:
-                    costs = {"wood": 0, "stone": 0, "food": 0}
-                try:
-                    work_complete = bool(building_system._site_work_complete(site))  # type: ignore[attr-defined]
-                except Exception:
-                    work_complete = True
-                if not work_complete:
-                    try:
-                        building_system._advance_construction_progress(site)  # type: ignore[attr-defined]
-                        site["construction_last_progress_tick"] = int(getattr(self, "tick", 0))
-                        site["construction_progress_active_ticks"] = int(site.get("construction_progress_active_ticks", 0)) + 1
-                        self.record_settlement_progression_metric("construction_progress_ticks")
-                        if site_type == "storage":
-                            self.record_settlement_progression_metric("storage_construction_progress_ticks")
-                    except Exception:
-                        pass
-                try:
-                    work_complete = bool(building_system._site_work_complete(site))  # type: ignore[attr-defined]
-                    ready = bool(building_system._site_ready_for_completion(site, costs))  # type: ignore[attr-defined]
-                except Exception:
-                    work_complete = False
-                    ready = False
-                if work_complete and ready:
-                    try:
-                        consumed = bool(building_system._use_construction_buffer(site, costs))  # type: ignore[attr-defined]
-                    except Exception:
-                        consumed = False
-                    if consumed:
-                        try:
-                            building_system._complete_construction_site(self, site)  # type: ignore[attr-defined]
-                        except Exception:
-                            pass
+                pass
         return int(moved)
 
     def update_settlement_progression_metrics(self) -> None:
@@ -6088,6 +6074,21 @@ class World:
         stats["houses_completed_count"] = int(hglobal.get("houses_completed_count", 0))
         active_sites = 0
         partial_sites = 0
+        near_complete_sites = 0
+        live_required_total = 0
+        live_delivered_total = 0
+        live_remaining_total = 0
+        live_required_work_total = 0
+        live_completed_work_total = 0
+        live_remaining_work_total = 0
+        state_counts = {
+            "planned": 0,
+            "supplying": 0,
+            "buildable": 0,
+            "in_progress": 0,
+            "paused": 0,
+            "completed": 0,
+        }
         for b in (self.buildings or {}).values():
             if not isinstance(b, dict):
                 continue
@@ -6095,10 +6096,22 @@ class World:
                 continue
             if str(b.get("operational_state", "")) != "under_construction":
                 continue
+            if hasattr(building_system, "_sync_construction_site_state"):
+                try:
+                    building_system._sync_construction_site_state(b, now_tick=int(getattr(self, "tick", 0)))  # type: ignore[attr-defined]
+                except Exception:
+                    pass
             active_sites += 1
             stats["construction_site_waiting_total_ticks"] = int(stats.get("construction_site_waiting_total_ticks", 0)) + 1
             progress = int(b.get("construction_progress", 0))
             required = max(1, int(b.get("construction_required_work", 1)))
+            remaining_work = max(0, required - progress)
+            live_required_work_total += int(required)
+            live_completed_work_total += int(max(0, min(progress, required)))
+            live_remaining_work_total += int(remaining_work)
+            build_state = str(b.get("build_state", "planned"))
+            if build_state in state_counts:
+                state_counts[build_state] = int(state_counts.get(build_state, 0)) + 1
             if progress > 0 and progress < required:
                 partial_sites += 1
                 stats["construction_site_progress_active_ticks"] = int(stats.get("construction_site_progress_active_ticks", 0)) + 1
@@ -6111,6 +6124,14 @@ class World:
             outstanding = 0
             if isinstance(needs, dict):
                 outstanding = int(needs.get("wood", 0)) + int(needs.get("stone", 0)) + int(needs.get("food", 0))
+            req = b.get("construction_request", {}) if isinstance(b.get("construction_request", {}), dict) else {}
+            required_total = int(req.get("wood_needed", 0)) + int(req.get("stone_needed", 0)) + int(req.get("food_needed", 0))
+            delivered_total = int(b.get("construction_delivered_units", 0))
+            live_required_total += max(0, required_total)
+            live_delivered_total += max(0, delivered_total)
+            live_remaining_total += max(0, outstanding)
+            if outstanding > 0 and outstanding <= 2:
+                near_complete_sites += 1
             btype = str(b.get("type", ""))
             if outstanding > 0:
                 stats["construction_site_waiting_for_material_ticks"] = int(stats.get("construction_site_waiting_for_material_ticks", 0)) + 1
@@ -6126,6 +6147,19 @@ class World:
                     stats["house_waiting_for_builder_ticks"] = int(stats.get("house_waiting_for_builder_ticks", 0)) + 1
         stats["active_construction_sites"] = int(active_sites)
         stats["partially_built_sites_count"] = int(partial_sites)
+        stats["construction_site_material_units_required_total"] = int(live_required_total)
+        stats["construction_site_material_units_delivered_total_live"] = int(live_delivered_total)
+        stats["construction_site_material_units_remaining"] = int(live_remaining_total)
+        stats["construction_site_required_work_ticks_total"] = int(live_required_work_total)
+        stats["construction_site_completed_work_ticks_total_live"] = int(live_completed_work_total)
+        stats["construction_site_remaining_work_ticks"] = int(live_remaining_work_total)
+        stats["construction_build_state_planned_count"] = int(state_counts.get("planned", 0))
+        stats["construction_build_state_supplying_count"] = int(state_counts.get("supplying", 0))
+        stats["construction_build_state_buildable_count"] = int(state_counts.get("buildable", 0))
+        stats["construction_build_state_in_progress_count"] = int(state_counts.get("in_progress", 0))
+        stats["construction_build_state_paused_count"] = int(state_counts.get("paused", 0))
+        stats["construction_build_state_completed_count"] = int(state_counts.get("completed", 0))
+        stats["construction_near_complete_sites_count"] = int(near_complete_sites)
         local_memory = self.local_practice_memory if isinstance(self.local_practice_memory, dict) else {}
         stats["active_cultural_practices"] = int(len(local_memory))
         counts_by_type: Dict[str, int] = {
@@ -6257,9 +6291,72 @@ class World:
                 float(stats.get("construction_site_material_units_missing_total", 0)) / float(max(1, site_missing_samples)),
                 4,
             ),
+            "construction_site_material_units_required_total": int(
+                stats.get("construction_site_material_units_required_total", 0)
+            ),
+            "construction_site_material_units_delivered_total": int(
+                stats.get("construction_site_material_units_delivered_total_live", 0)
+            ),
+            "construction_site_material_units_remaining": int(
+                stats.get("construction_site_material_units_remaining", 0)
+            ),
+            "construction_site_required_work_ticks_total": int(
+                stats.get("construction_site_required_work_ticks_total", 0)
+            ),
+            "construction_site_completed_work_ticks_total": int(
+                stats.get("construction_site_completed_work_ticks_total_live", 0)
+            ),
+            "construction_site_remaining_work_ticks": int(
+                stats.get("construction_site_remaining_work_ticks", 0)
+            ),
+            "construction_build_state_planned_count": int(
+                stats.get("construction_build_state_planned_count", 0)
+            ),
+            "construction_build_state_supplying_count": int(
+                stats.get("construction_build_state_supplying_count", 0)
+            ),
+            "construction_build_state_buildable_count": int(
+                stats.get("construction_build_state_buildable_count", 0)
+            ),
+            "construction_build_state_in_progress_count": int(
+                stats.get("construction_build_state_in_progress_count", 0)
+            ),
+            "construction_build_state_paused_count": int(
+                stats.get("construction_build_state_paused_count", 0)
+            ),
+            "construction_build_state_completed_count": int(
+                stats.get("construction_build_state_completed_count", 0)
+            ),
+            "construction_near_complete_sites_count": int(
+                stats.get("construction_near_complete_sites_count", 0)
+            ),
             "construction_site_completion_time_avg": round(
                 float(stats.get("construction_site_completion_time_total", 0)) / float(max(1, site_completion_samples)),
                 4,
+            ),
+            "construction_time_first_delivery_to_completion_avg": round(
+                float(stats.get("construction_time_first_delivery_to_completion_total", 0))
+                / float(max(1, int(stats.get("construction_time_first_delivery_to_completion_samples", 0)))),
+                4,
+            ),
+            "construction_time_first_progress_to_completion_avg": round(
+                float(stats.get("construction_time_first_progress_to_completion_total", 0))
+                / float(max(1, int(stats.get("construction_time_first_progress_to_completion_samples", 0)))),
+                4,
+            ),
+            "construction_time_first_work_to_completion_avg": round(
+                float(stats.get("construction_time_first_progress_to_completion_total", 0))
+                / float(max(1, int(stats.get("construction_time_first_progress_to_completion_samples", 0)))),
+                4,
+            ),
+            "construction_completed_after_first_delivery_count": int(
+                stats.get("construction_completed_after_first_delivery_count", 0)
+            ),
+            "construction_completed_after_started_progress_count": int(
+                stats.get("construction_completed_after_started_progress_count", 0)
+            ),
+            "construction_completed_after_first_work_count": int(
+                stats.get("construction_completed_after_started_progress_count", 0)
             ),
             "house_completion_time_avg": round(
                 float(stats.get("house_completion_time_total", 0)) / float(max(1, house_completion_samples)),
@@ -6432,7 +6529,64 @@ class World:
             "construction_site_material_units_missing_avg": float(
                 progression.get("construction_site_material_units_missing_avg", 0.0)
             ),
+            "construction_site_material_units_required_total": int(
+                progression.get("construction_site_material_units_required_total", 0)
+            ),
+            "construction_site_material_units_delivered_total": int(
+                progression.get("construction_site_material_units_delivered_total", 0)
+            ),
+            "construction_site_material_units_remaining": int(
+                progression.get("construction_site_material_units_remaining", 0)
+            ),
+            "construction_site_required_work_ticks_total": int(
+                progression.get("construction_site_required_work_ticks_total", 0)
+            ),
+            "construction_site_completed_work_ticks_total": int(
+                progression.get("construction_site_completed_work_ticks_total", 0)
+            ),
+            "construction_site_remaining_work_ticks": int(
+                progression.get("construction_site_remaining_work_ticks", 0)
+            ),
+            "construction_build_state_planned_count": int(
+                progression.get("construction_build_state_planned_count", 0)
+            ),
+            "construction_build_state_supplying_count": int(
+                progression.get("construction_build_state_supplying_count", 0)
+            ),
+            "construction_build_state_buildable_count": int(
+                progression.get("construction_build_state_buildable_count", 0)
+            ),
+            "construction_build_state_in_progress_count": int(
+                progression.get("construction_build_state_in_progress_count", 0)
+            ),
+            "construction_build_state_paused_count": int(
+                progression.get("construction_build_state_paused_count", 0)
+            ),
+            "construction_build_state_completed_count": int(
+                progression.get("construction_build_state_completed_count", 0)
+            ),
+            "construction_near_complete_sites_count": int(
+                progression.get("construction_near_complete_sites_count", 0)
+            ),
             "construction_site_completion_time_avg": float(progression.get("construction_site_completion_time_avg", 0.0)),
+            "construction_time_first_delivery_to_completion_avg": float(
+                progression.get("construction_time_first_delivery_to_completion_avg", 0.0)
+            ),
+            "construction_time_first_progress_to_completion_avg": float(
+                progression.get("construction_time_first_progress_to_completion_avg", 0.0)
+            ),
+            "construction_time_first_work_to_completion_avg": float(
+                progression.get("construction_time_first_work_to_completion_avg", 0.0)
+            ),
+            "construction_completed_after_first_delivery_count": int(
+                progression.get("construction_completed_after_first_delivery_count", 0)
+            ),
+            "construction_completed_after_started_progress_count": int(
+                progression.get("construction_completed_after_started_progress_count", 0)
+            ),
+            "construction_completed_after_first_work_count": int(
+                progression.get("construction_completed_after_first_work_count", 0)
+            ),
             "house_completion_time_avg": float(progression.get("house_completion_time_avg", 0.0)),
             "storage_completion_time_avg": float(progression.get("storage_completion_time_avg", 0.0)),
             "houses_completed_count": int(houses_completed),

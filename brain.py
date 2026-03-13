@@ -877,6 +877,16 @@ class FoodBrain:
         # -----------------------------
         def _nearest_construction_site_target(building_type: str) -> Optional[Tuple[int, int]]:
             village_id = getattr(agent, "village_id", None)
+            assigned_id = getattr(agent, "assigned_building_id", None)
+            if assigned_id is not None:
+                assigned = getattr(world, "buildings", {}).get(str(assigned_id))
+                if (
+                    isinstance(assigned, dict)
+                    and str(assigned.get("type", "")) == str(building_type)
+                    and str(assigned.get("operational_state", "")) == "under_construction"
+                    and (village_id is None or assigned.get("village_id") == village_id)
+                ):
+                    return (int(assigned.get("x", 0)), int(assigned.get("y", 0)))
             candidates = []
             for building in getattr(world, "buildings", {}).values():
                 if not isinstance(building, dict):
@@ -894,11 +904,26 @@ class FoodBrain:
                 required = max(1, int(building.get("construction_required_work", 1)))
                 progress_rank = 0 if progress > 0 else 1
                 completion_rank = -float(progress) / float(required)
-                candidates.append((progress_rank, completion_rank, dist, str(building.get("building_id", "")), bx, by))
+                req = building.get("construction_request", {})
+                buf = building.get("construction_buffer", {})
+                if not isinstance(req, dict):
+                    req = {}
+                if not isinstance(buf, dict):
+                    buf = {}
+                remaining = 0
+                for resource in ("wood", "stone", "food"):
+                    needed = int(req.get(f"{resource}_needed", 0))
+                    reserved = int(req.get(f"{resource}_reserved", 0))
+                    buffered = int(buf.get(resource, 0))
+                    remaining += max(0, needed - reserved - buffered)
+                near_complete_rank = 0 if remaining <= 2 else 1
+                recent_delivery_tick = int(building.get("construction_last_delivery_tick", -1))
+                recent_delivery_rank = 0 if recent_delivery_tick >= int(getattr(world, "tick", 0)) - 40 else 1
+                candidates.append((progress_rank, near_complete_rank, recent_delivery_rank, completion_rank, dist, str(building.get("building_id", "")), bx, by))
             if not candidates:
                 return None
-            candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
-            _, _, _, _, tx, ty = candidates[0]
+            candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3], item[4], item[5]))
+            _, _, _, _, _, _, tx, ty = candidates[0]
             return (tx, ty)
 
         def _nearest_under_construction_site_with_needs() -> Optional[Tuple[int, int]]:
@@ -948,6 +973,68 @@ class FoodBrain:
             candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3], item[4], item[5]))
             _, _, _, _, _, _, tx, ty = candidates[0]
             return (tx, ty)
+
+        def _construction_resource_source_target() -> Optional[Tuple[int, int]]:
+            village_id = getattr(agent, "village_id", None)
+            sites = []
+            for building in getattr(world, "buildings", {}).values():
+                if not isinstance(building, dict):
+                    continue
+                if str(building.get("operational_state", "")) != "under_construction":
+                    continue
+                if village_id is not None and building.get("village_id") != village_id:
+                    continue
+                req = building.get("construction_request", {})
+                buf = building.get("construction_buffer", {})
+                if not isinstance(req, dict):
+                    req = {}
+                if not isinstance(buf, dict):
+                    buf = {}
+                wood_need = max(0, int(req.get("wood_needed", 0)) - int(req.get("wood_reserved", 0)) - int(buf.get("wood", 0)))
+                stone_need = max(0, int(req.get("stone_needed", 0)) - int(req.get("stone_reserved", 0)) - int(buf.get("stone", 0)))
+                if wood_need <= 0 and stone_need <= 0:
+                    continue
+                progress = int(building.get("construction_progress", 0))
+                required = max(1, int(building.get("construction_required_work", 1)))
+                progress_rank = 0 if progress > 0 else 1
+                bx = int(building.get("x", 0))
+                by = int(building.get("y", 0))
+                dist = abs(int(agent.x) - bx) + abs(int(agent.y) - by)
+                remaining = int(wood_need + stone_need)
+                near_complete_rank = 0 if remaining <= 2 else 1
+                sites.append((progress_rank, near_complete_rank, dist, str(building.get("building_id", "")), bx, by, wood_need, stone_need))
+            if not sites:
+                return None
+            sites.sort(key=lambda row: (row[0], row[1], row[2], row[3]))
+            _, _, _, _, sx, sy, wood_need, stone_need = sites[0]
+            preferred: List[Tuple[str, int]] = []
+            if wood_need > 0:
+                preferred.append(("wood", wood_need))
+            if stone_need > 0:
+                preferred.append(("stone", stone_need))
+            if not preferred:
+                return None
+            preferred.sort(key=lambda item: -int(item[1]))
+            for resource_type, _need in preferred:
+                source_set = getattr(world, "wood", set()) if resource_type == "wood" else getattr(world, "stone", set())
+                if not source_set:
+                    continue
+                best = None
+                best_key = (10**9, 10**9, 10**9, 10**9)
+                for pos in source_set:
+                    px, py = int(pos[0]), int(pos[1])
+                    key = (
+                        abs(px - sx) + abs(py - sy),
+                        abs(px - int(agent.x)) + abs(py - int(agent.y)),
+                        px,
+                        py,
+                    )
+                    if key < best_key:
+                        best_key = key
+                        best = (px, py)
+                if best is not None:
+                    return best
+            return None
 
         def _village_by_uid(vuid: str) -> Optional[Dict[str, Any]]:
             uid = str(vuid or "")
@@ -1395,6 +1482,24 @@ class FoodBrain:
             self._record_gap_block(world, agent, "no_resource_target")
 
         if task == "food_logistics":
+            delivery_target = getattr(agent, "delivery_target_building_id", None)
+            delivery_resource = getattr(agent, "delivery_resource_type", None)
+            delivery_reserved = int(getattr(agent, "delivery_reserved_amount", 0) or 0)
+            if delivery_target and delivery_resource in {"wood", "stone", "food"} and delivery_reserved > 0:
+                building = getattr(world, "buildings", {}).get(str(delivery_target))
+                if isinstance(building, dict):
+                    if agent.inventory.get(delivery_resource, 0) > 0:
+                        return self.move_towards(agent, world, (int(building.get("x", 0)), int(building.get("y", 0))))
+                    village = world.get_village_by_id(getattr(agent, "village_id", None))
+                    if village:
+                        sp = village.get("storage_pos")
+                        if sp:
+                            return self.move_towards(agent, world, (sp["x"], sp["y"]))
+            acquisition_target = _construction_resource_source_target()
+            if acquisition_target is not None and (
+                int(agent.inventory.get("wood", 0)) + int(agent.inventory.get("stone", 0)) + int(agent.inventory.get("food", 0)) <= 0
+            ):
+                return self.move_towards(agent, world, acquisition_target)
             site_target = _nearest_under_construction_site_with_needs()
             if site_target is not None and (
                 int(agent.inventory.get("wood", 0)) > 0
@@ -1432,6 +1537,11 @@ class FoodBrain:
                     sp = village.get("storage_pos")
                     if sp:
                         return self.move_towards(agent, world, (sp["x"], sp["y"]))
+            acquisition_target = _construction_resource_source_target()
+            if acquisition_target is not None and (
+                int(agent.inventory.get("wood", 0)) + int(agent.inventory.get("stone", 0)) + int(agent.inventory.get("food", 0)) <= 0
+            ):
+                return self.move_towards(agent, world, acquisition_target)
             salient_logistics = self._attention_building_target(agent, world, {"storage", "house"})
             if salient_logistics is not None and random.random() < 0.25:
                 return self.move_towards(agent, world, salient_logistics)

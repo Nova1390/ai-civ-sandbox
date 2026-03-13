@@ -122,7 +122,15 @@ def test_summarize_family_aggregate_includes_material_feasibility_metrics() -> N
             "avg_construction_site_progress_before_abandon_avg": 1.5,
             "avg_construction_site_material_units_delivered_avg": 4.8,
             "avg_construction_site_material_units_missing_avg": 2.2,
+            "avg_construction_site_material_units_required_total": 18.0,
+            "avg_construction_site_material_units_delivered_total": 11.0,
+            "avg_construction_site_material_units_remaining": 7.0,
+            "avg_construction_near_complete_sites_count": 1.0,
             "avg_construction_site_completion_time_avg": 45.0,
+            "avg_construction_time_first_delivery_to_completion_avg": 20.0,
+            "avg_construction_time_first_progress_to_completion_avg": 15.0,
+            "avg_construction_completed_after_first_delivery_count": 2.0,
+            "avg_construction_completed_after_started_progress_count": 2.0,
             "avg_house_completion_time_avg": 40.0,
             "avg_storage_completion_time_avg": 60.0,
         }
@@ -165,6 +173,14 @@ def test_summarize_family_aggregate_includes_material_feasibility_metrics() -> N
     assert float(agg["avg_construction_site_progress_before_abandon_avg"]) == 1.5
     assert float(agg["avg_construction_site_material_units_delivered_avg"]) == 4.8
     assert float(agg["avg_construction_site_material_units_missing_avg"]) == 2.2
+    assert float(agg["avg_construction_site_material_units_required_total"]) == 18.0
+    assert float(agg["avg_construction_site_material_units_delivered_total"]) == 11.0
+    assert float(agg["avg_construction_site_material_units_remaining"]) == 7.0
+    assert float(agg["avg_construction_near_complete_sites_count"]) == 1.0
     assert float(agg["avg_construction_site_completion_time_avg"]) == 45.0
+    assert float(agg["avg_construction_time_first_delivery_to_completion_avg"]) == 20.0
+    assert float(agg["avg_construction_time_first_progress_to_completion_avg"]) == 15.0
+    assert float(agg["avg_construction_completed_after_first_delivery_count"]) == 2.0
+    assert float(agg["avg_construction_completed_after_started_progress_count"]) == 2.0
     assert float(agg["avg_house_completion_time_avg"]) == 40.0
     assert float(agg["avg_storage_completion_time_avg"]) == 60.0

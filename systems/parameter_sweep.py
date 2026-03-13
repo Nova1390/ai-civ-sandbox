@@ -153,7 +153,31 @@ def summarize_family_aggregate(aggregate: Dict[str, Any]) -> Dict[str, float]:
         "avg_construction_site_material_units_missing_avg": float(
             aggregate.get("avg_construction_site_material_units_missing_avg", 0.0)
         ),
+        "avg_construction_site_material_units_required_total": float(
+            aggregate.get("avg_construction_site_material_units_required_total", 0.0)
+        ),
+        "avg_construction_site_material_units_delivered_total": float(
+            aggregate.get("avg_construction_site_material_units_delivered_total", 0.0)
+        ),
+        "avg_construction_site_material_units_remaining": float(
+            aggregate.get("avg_construction_site_material_units_remaining", 0.0)
+        ),
+        "avg_construction_near_complete_sites_count": float(
+            aggregate.get("avg_construction_near_complete_sites_count", 0.0)
+        ),
         "avg_construction_site_completion_time_avg": float(aggregate.get("avg_construction_site_completion_time_avg", 0.0)),
+        "avg_construction_time_first_delivery_to_completion_avg": float(
+            aggregate.get("avg_construction_time_first_delivery_to_completion_avg", 0.0)
+        ),
+        "avg_construction_time_first_progress_to_completion_avg": float(
+            aggregate.get("avg_construction_time_first_progress_to_completion_avg", 0.0)
+        ),
+        "avg_construction_completed_after_first_delivery_count": float(
+            aggregate.get("avg_construction_completed_after_first_delivery_count", 0.0)
+        ),
+        "avg_construction_completed_after_started_progress_count": float(
+            aggregate.get("avg_construction_completed_after_started_progress_count", 0.0)
+        ),
         "avg_house_completion_time_avg": float(aggregate.get("avg_house_completion_time_avg", 0.0)),
         "avg_storage_completion_time_avg": float(aggregate.get("avg_storage_completion_time_avg", 0.0)),
     }

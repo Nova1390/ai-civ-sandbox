@@ -297,7 +297,15 @@ def test_aggregate_global_balance_includes_comm002_metrics() -> None:
                         "construction_site_progress_before_abandon_avg": 1.7,
                         "construction_site_material_units_delivered_avg": 5.2,
                         "construction_site_material_units_missing_avg": 2.1,
+                        "construction_site_material_units_required_total": 20,
+                        "construction_site_material_units_delivered_total": 13,
+                        "construction_site_material_units_remaining": 7,
+                        "construction_near_complete_sites_count": 1,
                         "construction_site_completion_time_avg": 47.0,
+                        "construction_time_first_delivery_to_completion_avg": 22.0,
+                        "construction_time_first_progress_to_completion_avg": 16.0,
+                        "construction_completed_after_first_delivery_count": 2,
+                        "construction_completed_after_started_progress_count": 2,
                         "house_completion_time_avg": 41.0,
                         "storage_completion_time_avg": 62.0,
                         "houses_completed_count": 5,
@@ -518,7 +526,15 @@ def test_aggregate_global_balance_includes_comm002_metrics() -> None:
                         "construction_site_progress_before_abandon_avg": 1.3,
                         "construction_site_material_units_delivered_avg": 4.6,
                         "construction_site_material_units_missing_avg": 1.7,
+                        "construction_site_material_units_required_total": 17,
+                        "construction_site_material_units_delivered_total": 11,
+                        "construction_site_material_units_remaining": 6,
+                        "construction_near_complete_sites_count": 1,
                         "construction_site_completion_time_avg": 42.0,
+                        "construction_time_first_delivery_to_completion_avg": 19.0,
+                        "construction_time_first_progress_to_completion_avg": 14.0,
+                        "construction_completed_after_first_delivery_count": 1,
+                        "construction_completed_after_started_progress_count": 1,
                         "house_completion_time_avg": 38.0,
                         "storage_completion_time_avg": 55.0,
                         "houses_completed_count": 3,
@@ -711,7 +727,15 @@ def test_aggregate_global_balance_includes_comm002_metrics() -> None:
     assert float(agg["avg_construction_site_progress_before_abandon_avg"]) == 1.5
     assert float(agg["avg_construction_site_material_units_delivered_avg"]) == 4.9
     assert float(agg["avg_construction_site_material_units_missing_avg"]) == 1.9
+    assert float(agg["avg_construction_site_material_units_required_total"]) == 18.5
+    assert float(agg["avg_construction_site_material_units_delivered_total"]) == 12.0
+    assert float(agg["avg_construction_site_material_units_remaining"]) == 6.5
+    assert float(agg["avg_construction_near_complete_sites_count"]) == 1.0
     assert float(agg["avg_construction_site_completion_time_avg"]) == 44.5
+    assert float(agg["avg_construction_time_first_delivery_to_completion_avg"]) == 20.5
+    assert float(agg["avg_construction_time_first_progress_to_completion_avg"]) == 15.0
+    assert float(agg["avg_construction_completed_after_first_delivery_count"]) == 1.5
+    assert float(agg["avg_construction_completed_after_started_progress_count"]) == 1.5
     assert float(agg["avg_house_completion_time_avg"]) == 39.5
     assert float(agg["avg_storage_completion_time_avg"]) == 58.5
     assert float(agg["avg_houses_completed_count"]) == 4.0

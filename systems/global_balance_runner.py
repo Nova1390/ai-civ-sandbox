@@ -812,8 +812,65 @@ def aggregate_global_balance_results(
     construction_site_material_units_missing_avg = _collect(
         ("metrics", "camp_proto", "material_feasibility_metrics", "construction_site_material_units_missing_avg")
     )
+    construction_site_material_units_required_total = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "construction_site_material_units_required_total")
+    )
+    construction_site_material_units_delivered_total = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "construction_site_material_units_delivered_total")
+    )
+    construction_site_material_units_remaining = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "construction_site_material_units_remaining")
+    )
+    construction_site_required_work_ticks_total = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "construction_site_required_work_ticks_total")
+    )
+    construction_site_completed_work_ticks_total = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "construction_site_completed_work_ticks_total")
+    )
+    construction_site_remaining_work_ticks = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "construction_site_remaining_work_ticks")
+    )
+    construction_build_state_planned_count = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "construction_build_state_planned_count")
+    )
+    construction_build_state_supplying_count = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "construction_build_state_supplying_count")
+    )
+    construction_build_state_buildable_count = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "construction_build_state_buildable_count")
+    )
+    construction_build_state_in_progress_count = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "construction_build_state_in_progress_count")
+    )
+    construction_build_state_paused_count = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "construction_build_state_paused_count")
+    )
+    construction_build_state_completed_count = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "construction_build_state_completed_count")
+    )
+    construction_near_complete_sites_count = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "construction_near_complete_sites_count")
+    )
     construction_site_completion_time_avg = _collect(
         ("metrics", "camp_proto", "material_feasibility_metrics", "construction_site_completion_time_avg")
+    )
+    construction_time_first_delivery_to_completion_avg = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "construction_time_first_delivery_to_completion_avg")
+    )
+    construction_time_first_progress_to_completion_avg = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "construction_time_first_progress_to_completion_avg")
+    )
+    construction_time_first_work_to_completion_avg = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "construction_time_first_work_to_completion_avg")
+    )
+    construction_completed_after_first_delivery_count = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "construction_completed_after_first_delivery_count")
+    )
+    construction_completed_after_started_progress_count = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "construction_completed_after_started_progress_count")
+    )
+    construction_completed_after_first_work_count = _collect(
+        ("metrics", "camp_proto", "material_feasibility_metrics", "construction_completed_after_first_work_count")
     )
     house_completion_time_avg = _collect(("metrics", "camp_proto", "material_feasibility_metrics", "house_completion_time_avg"))
     storage_completion_time_avg = _collect(("metrics", "camp_proto", "material_feasibility_metrics", "storage_completion_time_avg"))
@@ -1157,9 +1214,66 @@ def aggregate_global_balance_results(
             "avg_construction_site_material_units_missing_avg": float(
                 mean(construction_site_material_units_missing_avg)
             ) if construction_site_material_units_missing_avg else 0.0,
+            "avg_construction_site_material_units_required_total": float(
+                mean(construction_site_material_units_required_total)
+            ) if construction_site_material_units_required_total else 0.0,
+            "avg_construction_site_material_units_delivered_total": float(
+                mean(construction_site_material_units_delivered_total)
+            ) if construction_site_material_units_delivered_total else 0.0,
+            "avg_construction_site_material_units_remaining": float(
+                mean(construction_site_material_units_remaining)
+            ) if construction_site_material_units_remaining else 0.0,
+            "avg_construction_site_required_work_ticks_total": float(
+                mean(construction_site_required_work_ticks_total)
+            ) if construction_site_required_work_ticks_total else 0.0,
+            "avg_construction_site_completed_work_ticks_total": float(
+                mean(construction_site_completed_work_ticks_total)
+            ) if construction_site_completed_work_ticks_total else 0.0,
+            "avg_construction_site_remaining_work_ticks": float(
+                mean(construction_site_remaining_work_ticks)
+            ) if construction_site_remaining_work_ticks else 0.0,
+            "avg_construction_build_state_planned_count": float(
+                mean(construction_build_state_planned_count)
+            ) if construction_build_state_planned_count else 0.0,
+            "avg_construction_build_state_supplying_count": float(
+                mean(construction_build_state_supplying_count)
+            ) if construction_build_state_supplying_count else 0.0,
+            "avg_construction_build_state_buildable_count": float(
+                mean(construction_build_state_buildable_count)
+            ) if construction_build_state_buildable_count else 0.0,
+            "avg_construction_build_state_in_progress_count": float(
+                mean(construction_build_state_in_progress_count)
+            ) if construction_build_state_in_progress_count else 0.0,
+            "avg_construction_build_state_paused_count": float(
+                mean(construction_build_state_paused_count)
+            ) if construction_build_state_paused_count else 0.0,
+            "avg_construction_build_state_completed_count": float(
+                mean(construction_build_state_completed_count)
+            ) if construction_build_state_completed_count else 0.0,
+            "avg_construction_near_complete_sites_count": float(
+                mean(construction_near_complete_sites_count)
+            ) if construction_near_complete_sites_count else 0.0,
             "avg_construction_site_completion_time_avg": float(
                 mean(construction_site_completion_time_avg)
             ) if construction_site_completion_time_avg else 0.0,
+            "avg_construction_time_first_delivery_to_completion_avg": float(
+                mean(construction_time_first_delivery_to_completion_avg)
+            ) if construction_time_first_delivery_to_completion_avg else 0.0,
+            "avg_construction_time_first_progress_to_completion_avg": float(
+                mean(construction_time_first_progress_to_completion_avg)
+            ) if construction_time_first_progress_to_completion_avg else 0.0,
+            "avg_construction_time_first_work_to_completion_avg": float(
+                mean(construction_time_first_work_to_completion_avg)
+            ) if construction_time_first_work_to_completion_avg else 0.0,
+            "avg_construction_completed_after_first_delivery_count": float(
+                mean(construction_completed_after_first_delivery_count)
+            ) if construction_completed_after_first_delivery_count else 0.0,
+            "avg_construction_completed_after_started_progress_count": float(
+                mean(construction_completed_after_started_progress_count)
+            ) if construction_completed_after_started_progress_count else 0.0,
+            "avg_construction_completed_after_first_work_count": float(
+                mean(construction_completed_after_first_work_count)
+            ) if construction_completed_after_first_work_count else 0.0,
             "avg_house_completion_time_avg": float(mean(house_completion_time_avg)) if house_completion_time_avg else 0.0,
             "avg_storage_completion_time_avg": float(mean(storage_completion_time_avg)) if storage_completion_time_avg else 0.0,
         },
